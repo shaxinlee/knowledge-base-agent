@@ -1,0 +1,38 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+
+# Frontend
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local runtime data
+.data/
+uploads/
+tmp/
+logs/
+/models/
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
