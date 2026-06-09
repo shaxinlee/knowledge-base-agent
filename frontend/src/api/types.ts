@@ -197,6 +197,14 @@ export interface Chunk {
   file_id: string
   knowledge_base_id: string
   content: string
+  description: string | null
+  modality: 'text' | 'table' | 'image' | string
+  image_url: string | null
+  image_urls: string[]
+  image_alt: string | null
+  asset_paths: string[]
+  document_block_types: string[]
+  metadata: Record<string, unknown>
   source_locator: string
   token_count: number
   is_active: boolean
@@ -218,6 +226,10 @@ export interface RetrievalResultItem {
   excerpt: string
   score: number
   source: 'vector' | 'full_text' | 'hybrid'
+  modality: string
+  image_url: string | null
+  image_urls: string[]
+  image_alt: string | null
 }
 
 export interface RetrievalSearchResponse {
@@ -247,6 +259,10 @@ export interface Citation {
   source_locator: string
   excerpt: string
   chunk_id: string
+  modality: string
+  image_url: string | null
+  image_urls: string[]
+  image_alt: string | null
 }
 
 export interface Message {

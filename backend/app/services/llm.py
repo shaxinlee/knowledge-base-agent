@@ -8,6 +8,8 @@ import httpx
 from app.core.config import get_settings
 from app.core.errors import ApiError
 from app.schemas.retrieval import RetrievalResultItem
+from app.services.content_normalization import normalize_special_elements
+from app.services.visual_citations import strip_visible_image_references
 
 PROMPT_VERSION = "rag-citations-v1"
 DEMO_PROMPT_VERSION = "template-demo-v1"
@@ -137,8 +139,10 @@ def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> li
     system_prompt = (
         "You are a knowledge base assistant. Answer only using the provided context. "
         "If the context is insufficient, refuse briefly. Every factual claim must cite "
-        "the provided citation numbers like [1], [2]. Do not invent file names, pages, "
-        "or source locations."
+        "the provided citation numbers like [1], [2]. Do not output file paths, image "
+        "URLs, asset paths, storage paths, file names, pages, raw source locations, raw "
+        "HTML tags, or raw LaTeX code. Present tables as readable tables and formulas "
+        "as ordinary mathematical text."
     )
     context_lines = []
     for index, context in enumerate(contexts, start=1):
@@ -146,9 +150,7 @@ def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> li
             "\n".join(
                 [
                     f"[{index}]",
-                    f"file: {context.file_name}",
-                    f"source_locator: {context.source_locator}",
-                    f"excerpt: {context.excerpt}",
+                    f"excerpt: {normalize_special_elements(strip_visible_image_references(context.excerpt))}",
                 ]
             )
         )
@@ -170,7 +172,9 @@ def build_template_answer(*, query: str, contexts: Sequence[RetrievalResultItem]
         return build_refusal_answer()
     lines = ["根据当前知识库检索结果，回答如下："]
     for index, context in enumerate(contexts[:6], start=1):
-        lines.append(f"[{index}] {context.excerpt}")
+        lines.append(
+            f"[{index}] {normalize_special_elements(strip_visible_image_references(context.excerpt))}"
+        )
     lines.append(f"以上内容用于回答：{query}")
     return "\n".join(lines)
 
@@ -239,8 +243,9 @@ def parse_sse_token(line: str) -> str | None:
     if not isinstance(first_choice, dict):
         return None
     delta = first_choice.get("delta")
-    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-        return delta["content"]
+    content = delta.get("content") if isinstance(delta, dict) else None
+    if isinstance(content, str):
+        return content
     return None
 
 

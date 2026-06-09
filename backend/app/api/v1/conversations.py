@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models import User
+from app.rag.query_router import QueryRouterProtocol, get_query_router
 from app.schemas.conversations import (
     ConversationCreateRequest,
     ConversationDetailResponse,
@@ -25,6 +26,7 @@ from app.services.conversations import (
     delete_conversation,
     get_conversation_detail,
     list_conversations,
+    stream_create_message_events,
 )
 from app.services.embedding import EmbeddingClientProtocol, get_embedding_client
 from app.services.llm import LLMClientProtocol, get_llm_client
@@ -37,6 +39,7 @@ __all__ = [
     "get_embedding_client",
     "get_bm25_index_client",
     "get_llm_client",
+    "get_query_router",
     "get_reranker_client",
     "get_vector_index_client",
     "router",
@@ -98,7 +101,27 @@ def create_conversation_message_endpoint(
     llm_client: LLMClientProtocol = Depends(get_llm_client),
     vector_index_client: VectorIndexClientProtocol = Depends(get_vector_index_client),
     bm25_index_client: BM25IndexClientProtocol = Depends(get_bm25_index_client),
+    query_router: QueryRouterProtocol = Depends(get_query_router),
 ) -> MessageCreateResponse | StreamingResponse:
+    if payload.stream:
+        return StreamingResponse(
+            iter_stream_message_sse_events(
+                stream_create_message_events(
+                    db,
+                    conversation_id=conversation_id,
+                    payload=payload,
+                    current_user=current_user,
+                    embedding_client=embedding_client,
+                    reranker_client=reranker_client,
+                    llm_client=llm_client,
+                    vector_index_client=vector_index_client,
+                    bm25_index_client=bm25_index_client,
+                    query_router=query_router,
+                )
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     response = create_message(
         db,
         conversation_id=conversation_id,
@@ -109,14 +132,16 @@ def create_conversation_message_endpoint(
         llm_client=llm_client,
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
+        query_router=query_router,
     )
-    if not payload.stream:
-        return response
-    return StreamingResponse(
-        iter_message_sse_events(response),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return response
+
+
+def iter_stream_message_sse_events(
+    events: Generator[tuple[str, dict[str, Any]], None, None],
+) -> Generator[str, None, None]:
+    for event, data in events:
+        yield build_sse_event(event, data)
 
 
 def iter_message_sse_events(response: MessageCreateResponse) -> Generator[str, None, None]:

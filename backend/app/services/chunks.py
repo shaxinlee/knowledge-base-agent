@@ -10,6 +10,14 @@ from sqlalchemy.orm import Session
 
 from app.models import ChunkMetadata, DocumentBlock, File, FileStatus, ParseJob, ParseJobStatus
 from app.schemas.files import ChunkDebugListResponse, ChunkDebugResponse
+from app.services.visual_citations import (
+    build_chunk_image_alt,
+    build_chunk_image_url,
+    build_chunk_image_urls,
+    chunk_has_image_source,
+    extract_asset_paths_from_metadata,
+    get_asset_paths,
+)
 
 TARGET_CHUNK_CHARS = 1000
 MAX_CHUNK_CHARS = 1200
@@ -177,7 +185,6 @@ def split_blocks_into_drafts(
     split_reason: str,
     keep_boundary: bool = False,
 ) -> list[ChunkDraft]:
-    first_block = source_blocks[0]
     chunks = split_text_recursively(content, keep_boundary=keep_boundary)
     drafts: list[ChunkDraft] = []
     for part_index, chunk_content in enumerate(chunks):
@@ -193,20 +200,40 @@ def split_blocks_into_drafts(
                 source_blocks=source_blocks,
                 heading_path=heading_path.copy() if heading_path else None,
                 source_locator=source_locator,
-                metadata={
-                    "document_block_ids": [str(block.id) for block in source_blocks],
-                    "document_block_indexes": [block.block_index for block in source_blocks],
-                    "document_block_types": [
-                        normalize_block_type(block.block_type) for block in source_blocks
-                    ],
-                    "split_reason": split_reason,
-                    "split_part_index": part_index,
-                    "split_part_count": len(chunks),
-                    "source_name": (first_block.block_metadata or {}).get("source_name"),
-                },
+                metadata=build_chunk_metadata(
+                    source_blocks=source_blocks,
+                    split_reason=split_reason,
+                    part_index=part_index,
+                    part_count=len(chunks),
+                ),
             )
         )
     return drafts
+
+
+def build_chunk_metadata(
+    *,
+    source_blocks: list[DocumentBlock],
+    split_reason: str,
+    part_index: int,
+    part_count: int,
+) -> dict[str, Any]:
+    first_block = source_blocks[0]
+    block_metadata_items = [block.block_metadata or {} for block in source_blocks]
+    metadata: dict[str, Any] = {
+        "document_block_ids": [str(block.id) for block in source_blocks],
+        "document_block_indexes": [block.block_index for block in source_blocks],
+        "document_block_types": [normalize_block_type(block.block_type) for block in source_blocks],
+        "split_reason": split_reason,
+        "split_part_index": part_index,
+        "split_part_count": part_count,
+        "source_name": (first_block.block_metadata or {}).get("source_name"),
+    }
+    asset_paths = extract_asset_paths_from_metadata(block_metadata_items)
+    if asset_paths:
+        metadata["asset_paths"] = asset_paths
+        metadata["asset_path"] = asset_paths[0]
+    return metadata
 
 
 def split_text_recursively(content: str, *, keep_boundary: bool = False) -> list[str]:
@@ -292,25 +319,51 @@ def list_chunks(
         .offset((normalized_page - 1) * normalized_page_size)
         .limit(normalized_page_size)
     ).all()
+    file = db.get(File, file_id)
     return ChunkDebugListResponse(
-        items=[build_chunk_response(chunk) for chunk in chunks],
+        items=[build_chunk_response(chunk, file=file) for chunk in chunks],
         total=total,
         page=normalized_page,
         page_size=normalized_page_size,
     )
 
 
-def build_chunk_response(chunk: ChunkMetadata) -> ChunkDebugResponse:
+def build_chunk_response(chunk: ChunkMetadata, *, file: File | None = None) -> ChunkDebugResponse:
+    metadata = dict(chunk.chunk_metadata or {})
+    document_block_types = extract_document_block_types(metadata)
     return ChunkDebugResponse(
         id=str(chunk.id),
         file_id=str(chunk.file_id),
         knowledge_base_id=str(chunk.knowledge_base_id),
         content=chunk.content,
+        description=chunk.description,
+        modality=infer_debug_chunk_modality(chunk, document_block_types=document_block_types),
+        image_url=build_chunk_image_url(chunk),
+        image_urls=build_chunk_image_urls(chunk),
+        image_alt=build_chunk_image_alt(chunk, file) if file is not None else None,
+        asset_paths=get_asset_paths(chunk),
+        document_block_types=document_block_types,
+        metadata=metadata,
         source_locator=chunk.source_locator,
         token_count=chunk.token_count or 0,
         is_active=chunk.is_active,
         created_at=chunk.created_at,
     )
+
+
+def infer_debug_chunk_modality(chunk: ChunkMetadata, *, document_block_types: list[str]) -> str:
+    if chunk_has_image_source(chunk):
+        return "image"
+    if any("table" in block_type for block_type in document_block_types):
+        return "table"
+    return "text"
+
+
+def extract_document_block_types(metadata: dict[str, Any]) -> list[str]:
+    value = metadata.get("document_block_types")
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
 
 
 def build_source_type(file: File) -> str:

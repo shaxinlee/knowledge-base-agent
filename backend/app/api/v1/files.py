@@ -33,9 +33,14 @@ from app.services.files import (
     retry_parse_file,
     upload_files,
 )
+from app.services.file_assets import get_parsed_file_asset, get_raw_file_asset
 from app.services.parse_pipeline import run_parse_job_background
 from app.services.bm25_index import BM25IndexClientProtocol, get_bm25_index_client
 from app.services.embedding import EmbeddingClientProtocol, get_embedding_client
+from app.services.image_descriptions import (
+    ImageDescriptionClientProtocol,
+    get_image_description_client,
+)
 from app.services.mineru import MineruClient, get_mineru_client
 from app.services.object_storage import ObjectStorage, get_object_storage
 from app.services.vector_index import VectorIndexClientProtocol, get_vector_index_client
@@ -44,6 +49,7 @@ router = APIRouter(tags=["Files"])
 
 __all__ = [
     "get_embedding_client",
+    "get_image_description_client",
     "get_bm25_index_client",
     "get_mineru_client",
     "get_object_storage",
@@ -91,6 +97,9 @@ async def upload_files_endpoint(
     embedding_client: EmbeddingClientProtocol = Depends(get_embedding_client),
     vector_index_client: VectorIndexClientProtocol = Depends(get_vector_index_client),
     bm25_index_client: BM25IndexClientProtocol = Depends(get_bm25_index_client),
+    image_description_client: ImageDescriptionClientProtocol = Depends(
+        get_image_description_client
+    ),
 ) -> FileUploadResponse:
     response = await upload_files(
         db,
@@ -112,6 +121,7 @@ async def upload_files_endpoint(
             embedding_client=embedding_client,
             vector_index_client=vector_index_client,
             bm25_index_client=bm25_index_client,
+            image_description_client=image_description_client,
         )
     return response
 
@@ -145,6 +155,29 @@ def read_file_chunks(
     return list_file_debug_chunks(db, file_id=file_id, page=page, page_size=page_size)
 
 
+@router.get("/files/{file_id}/raw", response_model=None)
+def read_raw_file_asset(
+    file_id: UUID,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> Response:
+    asset = get_raw_file_asset(db, file_id=file_id, storage=storage)
+    return Response(content=asset.content, media_type=asset.media_type)
+
+
+@router.get("/files/{file_id}/assets", response_model=None)
+def read_parsed_file_asset(
+    file_id: UUID,
+    path: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> Response:
+    asset = get_parsed_file_asset(db, file_id=file_id, asset_path=path, storage=storage)
+    return Response(content=asset.content, media_type=asset.media_type)
+
+
 @router.post("/files/{file_id}/retry-parse", response_model=ParseJobResponse, status_code=202)
 def retry_file_parse_endpoint(
     file_id: UUID,
@@ -157,6 +190,9 @@ def retry_file_parse_endpoint(
     embedding_client: EmbeddingClientProtocol = Depends(get_embedding_client),
     vector_index_client: VectorIndexClientProtocol = Depends(get_vector_index_client),
     bm25_index_client: BM25IndexClientProtocol = Depends(get_bm25_index_client),
+    image_description_client: ImageDescriptionClientProtocol = Depends(
+        get_image_description_client
+    ),
 ) -> ParseJobResponse:
     response = retry_parse_file(
         db,
@@ -172,6 +208,7 @@ def retry_file_parse_endpoint(
         embedding_client=embedding_client,
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
+        image_description_client=image_description_client,
     )
     return response
 

@@ -24,6 +24,7 @@ class ChunkMetadata(Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)

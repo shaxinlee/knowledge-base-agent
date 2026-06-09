@@ -6,13 +6,22 @@ import {
   Collection,
   Delete,
   Link,
+  Picture,
   Plus,
   Refresh,
   Search,
   Warning,
 } from '@element-plus/icons-vue'
-import { ElButton, ElIcon, ElInput, ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
-import { computed, nextTick, onMounted, ref } from 'vue'
+import {
+  ElButton,
+  ElIcon,
+  ElInput,
+  ElMessage,
+  ElMessageBox,
+  ElOption,
+  ElSelect,
+} from 'element-plus'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -21,6 +30,7 @@ import {
   deleteConversation,
   getAccessToken,
   getConversation,
+  loadAuthorizedAssetObjectUrl,
   listConversations,
   listKnowledgeBases,
   streamConversationMessage,
@@ -28,6 +38,14 @@ import {
 } from '@/api/client'
 import type { Citation, Conversation, FeedbackRating, KnowledgeBase, Message } from '@/api/types'
 import AppLayout from '@/components/AppLayout.vue'
+import { parseMarkdownDisplayBlocks, type MarkdownDisplayBlock } from '@/utils/markdownTables'
+
+interface CitationImageItem {
+  key: string
+  citation: Citation
+  sourceUrl: string
+  alt: string
+}
 
 const router = useRouter()
 const knowledgeBases = ref<KnowledgeBase[]>([])
@@ -42,6 +60,12 @@ const sending = ref(false)
 const creatingKnowledgeBase = ref(false)
 const errorMessage = ref('')
 const selectedCitation = ref<Citation | null>(null)
+const selectedCitationImageUrls = ref<string[]>([])
+const selectedCitationImageLoading = ref(false)
+const selectedCitationImageError = ref('')
+const streamingAssistantMessageId = ref('')
+const citationImageUrls = ref<Record<string, string>>({})
+const citationImageLoading = ref<Record<string, boolean>>({})
 const messagesRef = ref<HTMLElement | null>(null)
 const feedbackByMessageId = ref<Record<string, FeedbackRating>>({})
 const feedbackSubmitting = ref<Record<string, boolean>>({})
@@ -65,7 +89,8 @@ const activeCitations = computed(() => {
 })
 
 const canSend = computed(
-  () => Boolean(activeKnowledgeBaseId.value) && composerText.value.trim().length > 0 && !sending.value,
+  () =>
+    Boolean(activeKnowledgeBaseId.value) && composerText.value.trim().length > 0 && !sending.value,
 )
 
 onMounted(async () => {
@@ -74,6 +99,23 @@ onMounted(async () => {
     return
   }
   await loadKnowledgeBases()
+})
+
+watch(selectedCitation, (citation) => {
+  void loadSelectedCitationImage(citation)
+})
+
+watch(
+  messages,
+  () => {
+    void preloadCitationImages()
+  },
+  { deep: true },
+)
+
+onBeforeUnmount(() => {
+  revokeSelectedCitationImageUrl()
+  revokeCitationImageUrls()
 })
 
 async function loadKnowledgeBases(): Promise<void> {
@@ -247,7 +289,9 @@ async function sendMessage(): Promise<void> {
         onMessageCreated(event) {
           streamStarted = true
           assistantMessageId = event.assistant_message.id
+          streamingAssistantMessageId.value = assistantMessageId
           messages.value = [...messages.value, event.user_message, event.assistant_message]
+          void scrollToBottom()
         },
         onToken(event) {
           messages.value = messages.value.map((message) =>
@@ -255,6 +299,7 @@ async function sendMessage(): Promise<void> {
               ? { ...message, content: `${message.content}${event.text}` }
               : message,
           )
+          void scrollToBottom()
         },
         onDone(event) {
           messages.value = messages.value.map((message) =>
@@ -262,7 +307,10 @@ async function sendMessage(): Promise<void> {
               ? { ...message, content: event.answer, citations: event.citations }
               : message,
           )
+          streamingAssistantMessageId.value = ''
           selectedCitation.value = event.citations[0] ?? null
+          void preloadCitationImages()
+          void scrollToBottom()
         },
       },
     )
@@ -275,6 +323,7 @@ async function sendMessage(): Promise<void> {
     handleError(error)
   } finally {
     sending.value = false
+    streamingAssistantMessageId.value = ''
   }
 }
 
@@ -332,6 +381,216 @@ function syncFeedbackState(items: Message[]): void {
   }, {})
 }
 
+function isWaitingMessage(message: Message): boolean {
+  return (
+    message.role === 'assistant' &&
+    message.id === streamingAssistantMessageId.value &&
+    message.content.length === 0
+  )
+}
+
+function displayMessageLines(message: Message): string[] {
+  if (message.role !== 'assistant') {
+    return normalizeSpecialDisplayText(message.content).split('\n')
+  }
+  return stripMarkdownImageLines(normalizeSpecialDisplayText(message.content))
+}
+
+function displayMessageBlocks(message: Message): MarkdownDisplayBlock[] {
+  return parseMarkdownDisplayBlocks(displayMessageLines(message), normalizeSpecialDisplayText)
+}
+
+function stripMarkdownImageLines(content: string): string[] {
+  const lines = content.split('\n')
+  const visibleLines: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim()
+    const nextLine = lines[index + 1]?.trim() ?? ''
+    if (isInlineMarkdownImageLine(line)) {
+      continue
+    }
+    if (isStandaloneMarkdownImageMarker(line) && isStandaloneImagePathLine(nextLine)) {
+      index += 1
+      continue
+    }
+    if (isStandaloneImagePathLine(line)) {
+      continue
+    }
+    visibleLines.push(lines[index])
+  }
+  return visibleLines
+}
+
+function isInlineMarkdownImageLine(line: string): boolean {
+  return /^!\[[^\]]*]\([^)]+\)$/.test(line)
+}
+
+function isStandaloneMarkdownImageMarker(line: string): boolean {
+  return /^!\[[^\]]*]$/.test(line)
+}
+
+function isStandaloneImagePathLine(line: string): boolean {
+  const normalized = line.replace(/^\(/, '').replace(/\)$/, '').trim().toLocaleLowerCase()
+  return /^images\/.+\.(jpg|jpeg|png|webp|gif|bmp)(\?.*)?$/.test(normalized)
+}
+
+function normalizeSpecialDisplayText(content: string): string {
+  return normalizeLatexText(stripHtmlTags(decodeHtmlEntities(content)))
+}
+
+function decodeHtmlEntities(content: string): string {
+  const textarea = document.createElement('textarea')
+  textarea.innerHTML = content
+  return textarea.value
+}
+
+function stripHtmlTags(content: string): string {
+  return content
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*(p|div|section|article|tr|h[1-6])\s*>/gi, '\n')
+    .replace(/<\/\s*(td|th)\s*>\s*<\s*(td|th)\b[^>]*>/gi, ' | ')
+    .replace(/<\s*li\b[^>]*>/gi, '- ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, '')
+}
+
+function normalizeLatexText(content: string): string {
+  const replacements: Record<string, string> = {
+    '\\times': '×',
+    '\\cdot': '·',
+    '\\div': '÷',
+    '\\leq': '≤',
+    '\\le': '≤',
+    '\\geq': '≥',
+    '\\ge': '≥',
+    '\\neq': '≠',
+    '\\ne': '≠',
+    '\\approx': '≈',
+    '\\pm': '±',
+    '\\rightarrow': '→',
+    '\\to': '→',
+    '\\infty': '∞',
+    '\\sum': 'Σ',
+    '\\int': '∫',
+    '\\alpha': 'α',
+    '\\beta': 'β',
+    '\\gamma': 'γ',
+    '\\delta': 'δ',
+    '\\theta': 'θ',
+    '\\lambda': 'λ',
+    '\\pi': 'π',
+  }
+  let normalized = content
+    .replace(/\\\[(.*?)\\\]/gs, '$1')
+    .replace(/\\\((.*?)\\\)/gs, '$1')
+    .replace(/\$\$(.*?)\$\$/gs, '$1')
+    .replace(/(?<!\$)\$([^$\n]+)\$(?!\$)/g, '$1')
+    .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)')
+    .replace(/\\sqrt\{([^{}]+)\}/g, '√($1)')
+    .replace(/\\(?:text|mathrm|mathbf|operatorname)\{([^{}]+)\}/g, '$1')
+    .replace(/\\begin\{[^}]+}|\s*\\end\{[^}]+}/g, '')
+    .replace(/\\\\/g, '\n')
+    .replace(/&/g, ' ')
+    .replace(/\^\{([^}]+)}/g, '^$1')
+    .replace(/_\{([^}]+)}/g, '_$1')
+  Object.entries(replacements).forEach(([source, replacement]) => {
+    normalized = normalized.split(source).join(replacement)
+  })
+  return normalized
+    .replace(/\\[a-zA-Z]+/g, '')
+    .replace(/[{}]/g, '')
+    .trim()
+}
+
+function messageImageItems(message: Message): CitationImageItem[] {
+  if (message.role !== 'assistant') {
+    return []
+  }
+  return message.citations.flatMap((citation) =>
+    citationImageSourceUrls(citation).map((sourceUrl, index) => ({
+      key: citationImageKey(citation, sourceUrl, index),
+      citation,
+      sourceUrl,
+      alt: citation.image_alt || citation.file_name,
+    })),
+  )
+}
+
+function citationImageSourceUrls(citation: Citation): string[] {
+  if (citation.image_urls.length > 0) {
+    return citation.image_urls
+  }
+  return citation.image_url ? [citation.image_url] : []
+}
+
+function citationImageKey(citation: Citation, sourceUrl: string, index: number): string {
+  const citationKey =
+    citation.id ?? `${citation.chunk_id}:${citation.source_locator}:${citation.index}`
+  return `${citationKey}:${index}:${sourceUrl}`
+}
+
+function citationImageObjectUrl(item: CitationImageItem): string {
+  return citationImageUrls.value[item.key] ?? ''
+}
+
+async function preloadCitationImages(): Promise<void> {
+  const imageItems = messages.value.flatMap((message) => messageImageItems(message))
+  await Promise.all(
+    imageItems.map(async (item) => {
+      if (citationImageUrls.value[item.key] || citationImageLoading.value[item.key]) {
+        return
+      }
+      citationImageLoading.value = { ...citationImageLoading.value, [item.key]: true }
+      try {
+        const objectUrl = await loadAuthorizedAssetObjectUrl(item.sourceUrl)
+        citationImageUrls.value = { ...citationImageUrls.value, [item.key]: objectUrl }
+      } catch {
+        citationImageUrls.value = { ...citationImageUrls.value, [item.key]: '' }
+      } finally {
+        citationImageLoading.value = { ...citationImageLoading.value, [item.key]: false }
+      }
+    }),
+  )
+}
+
+async function loadSelectedCitationImage(citation: Citation | null): Promise<void> {
+  revokeSelectedCitationImageUrl()
+  selectedCitationImageUrls.value = []
+  selectedCitationImageError.value = ''
+  const imageUrls = citation ? citationImageSourceUrls(citation) : []
+  if (imageUrls.length === 0) {
+    selectedCitationImageLoading.value = false
+    return
+  }
+  selectedCitationImageLoading.value = true
+  try {
+    selectedCitationImageUrls.value = await Promise.all(
+      imageUrls.map((imageUrl) => loadAuthorizedAssetObjectUrl(imageUrl)),
+    )
+  } catch {
+    selectedCitationImageError.value = '图片无法加载'
+  } finally {
+    selectedCitationImageLoading.value = false
+  }
+}
+
+function revokeSelectedCitationImageUrl(): void {
+  selectedCitationImageUrls.value.forEach((url) => {
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url)
+    }
+  })
+}
+
+function revokeCitationImageUrls(): void {
+  Object.values(citationImageUrls.value).forEach((url) => {
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url)
+    }
+  })
+}
+
 async function submitFeedback(message: Message, rating: FeedbackRating): Promise<void> {
   feedbackSubmitting.value = {
     ...feedbackSubmitting.value,
@@ -371,12 +630,7 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
           :disabled="loading || knowledgeBases.length === 0"
           @change="handleKnowledgeBaseChange"
         >
-          <el-option
-            v-for="kb in knowledgeBases"
-            :key="kb.id"
-            :label="kb.name"
-            :value="kb.id"
-          />
+          <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
         </el-select>
       </div>
     </template>
@@ -420,7 +674,11 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
         <div v-if="knowledgeBases.length === 0" class="panel-empty">
           <el-icon><Warning /></el-icon>
           <span>暂无可用知识库</span>
-          <el-button size="small" :loading="creatingKnowledgeBase" @click="createKnowledgeBaseFromChat">
+          <el-button
+            size="small"
+            :loading="creatingKnowledgeBase"
+            @click="createKnowledgeBaseFromChat"
+          >
             创建
           </el-button>
         </div>
@@ -485,10 +743,53 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                 :class="['chat-bubble', message.role === 'user' ? 'user-bubble' : 'ai-bubble']"
                 :data-testid="`message-bubble-${message.role}`"
               >
-                <p v-for="line in message.content.split('\n')" :key="line || message.id">
-                  {{ line }}
-                </p>
+                <p v-if="isWaitingMessage(message)" class="waiting-text">waiting</p>
+                <template v-else>
+                  <template v-for="block in displayMessageBlocks(message)" :key="block.key">
+                    <p v-if="block.type === 'paragraph'">{{ block.text }}</p>
+                    <div v-else class="message-table-wrap">
+                      <table class="message-table">
+                        <thead>
+                          <tr>
+                            <th v-for="(header, headerIndex) in block.headers" :key="headerIndex">
+                              {{ header }}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
+                            <td v-for="(cell, cellIndex) in row" :key="cellIndex">
+                              {{ cell }}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </template>
               </article>
+            </div>
+
+            <div
+              v-if="messageImageItems(message).length"
+              class="message-images"
+              data-testid="message-image-list"
+            >
+              <button
+                v-for="item in messageImageItems(message)"
+                :key="item.key"
+                type="button"
+                class="message-image-preview"
+                data-testid="message-image-preview"
+                @click="selectedCitation = item.citation"
+              >
+                <img
+                  v-if="citationImageObjectUrl(item)"
+                  :src="citationImageObjectUrl(item)"
+                  :alt="item.alt"
+                />
+                <span v-else>图片加载中</span>
+              </button>
             </div>
 
             <div
@@ -504,12 +805,16 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                 :data-citation-index="citation.index"
                 @click="selectedCitation = citation"
               >
+                <el-icon v-if="citation.modality === 'image'"><Picture /></el-icon>
                 [{{ citation.index }}] {{ citation.file_name }}
               </button>
             </div>
             <div v-if="message.role === 'assistant'" class="feedback-row">
               <button
-                :class="['feedback-button', feedbackByMessageId[message.id] === 'helpful' ? 'active' : '']"
+                :class="[
+                  'feedback-button',
+                  feedbackByMessageId[message.id] === 'helpful' ? 'active' : '',
+                ]"
                 type="button"
                 data-testid="feedback-helpful-button"
                 :disabled="feedbackSubmitting[message.id]"
@@ -519,7 +824,10 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                 有帮助
               </button>
               <button
-                :class="['feedback-button', feedbackByMessageId[message.id] === 'unhelpful' ? 'active' : '']"
+                :class="[
+                  'feedback-button',
+                  feedbackByMessageId[message.id] === 'unhelpful' ? 'active' : '',
+                ]"
                 type="button"
                 data-testid="feedback-unhelpful-button"
                 :disabled="feedbackSubmitting[message.id]"
@@ -566,9 +874,31 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
         <article v-if="selectedCitation" class="reference-card" data-testid="citation-detail">
           <div class="reference-title">
             <span class="ref-index">{{ selectedCitation.index }}</span>
-            <strong data-testid="citation-detail-file-name">{{ selectedCitation.file_name }}</strong>
+            <strong data-testid="citation-detail-file-name">{{
+              selectedCitation.file_name
+            }}</strong>
           </div>
-          <blockquote data-testid="citation-detail-excerpt">{{ selectedCitation.excerpt }}</blockquote>
+          <div
+            v-if="citationImageSourceUrls(selectedCitation).length"
+            class="reference-image"
+            data-testid="citation-detail-image"
+          >
+            <div v-if="selectedCitationImageLoading" class="reference-image-state">图片加载中</div>
+            <template v-else-if="selectedCitationImageUrls.length">
+              <img
+                v-for="imageUrl in selectedCitationImageUrls"
+                :key="imageUrl"
+                :src="imageUrl"
+                :alt="selectedCitation.image_alt || selectedCitation.file_name"
+              />
+            </template>
+            <div v-else class="reference-image-state error">
+              {{ selectedCitationImageError || '图片无法加载' }}
+            </div>
+          </div>
+          <blockquote data-testid="citation-detail-excerpt">
+            {{ selectedCitation.excerpt }}
+          </blockquote>
           <footer>
             <span data-testid="citation-detail-source-locator">
               {{ selectedCitation.source_locator }}
@@ -770,6 +1100,62 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
   margin-bottom: 0;
 }
 
+.message-table-wrap {
+  max-width: 100%;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.message-table {
+  width: 100%;
+  min-width: 360px;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.5;
+  background: #fff;
+}
+
+.message-table th,
+.message-table td {
+  padding: 8px 10px;
+  border: 1px solid var(--ka-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.message-table th {
+  color: var(--ka-text);
+  font-weight: 700;
+  background: #eef1ff;
+}
+
+.message-table td {
+  color: var(--ka-text-secondary);
+}
+
+.waiting-text {
+  color: var(--ka-text-secondary);
+  font-style: italic;
+}
+
+.waiting-text::after {
+  display: inline-block;
+  width: 18px;
+  content: '...';
+  animation: waiting-pulse 1.2s infinite;
+}
+
+@keyframes waiting-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 .user-bubble {
   border-radius: 12px 12px 2px;
   color: #fff;
@@ -805,13 +1191,50 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
   margin: -8px 0 22px 52px;
 }
 
+.message-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 260px));
+  gap: 12px;
+  margin: -8px 0 18px 52px;
+}
+
+.message-image-preview {
+  display: grid;
+  min-height: 132px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--ka-border);
+  border-radius: 6px;
+  color: var(--ka-text-secondary);
+  background: #fff;
+  cursor: pointer;
+}
+
+.message-image-preview img {
+  display: block;
+  width: 100%;
+  height: 160px;
+  object-fit: contain;
+}
+
+.message-image-preview span {
+  font-size: 13px;
+}
+
 .citation-chips button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
   padding: 8px 12px;
   border: 1px solid var(--ka-border);
   border-radius: 4px;
   color: var(--ka-primary);
   background: #eef1ff;
   cursor: pointer;
+}
+
+.citation-chips .el-icon {
+  font-size: 14px;
 }
 
 .feedback-row {
@@ -915,6 +1338,34 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
 
 .reference-title strong {
   overflow-wrap: anywhere;
+}
+
+.reference-image {
+  display: grid;
+  min-height: 180px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--ka-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.reference-image img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+}
+
+.reference-image-state {
+  padding: 20px;
+  color: var(--ka-text-secondary);
+  font-size: 14px;
+}
+
+.reference-image-state.error {
+  color: var(--ka-error);
 }
 
 .ref-index {

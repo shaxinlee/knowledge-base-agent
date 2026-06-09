@@ -1,3 +1,9 @@
+import json
+
+import httpx
+from pytest import MonkeyPatch
+
+from app.core.config import get_settings
 from app.rag.query_router import LLMQueryRouter, RuleBasedQueryRouter
 
 
@@ -24,6 +30,7 @@ def test_image_query_routes_to_image_and_text() -> None:
 
     assert route_enabled(decision, "text")
     assert route_enabled(decision, "image")
+    assert decision.search_image_vector is True
     assert decision.answer_policy.must_return_visual is True
     assert decision.intent == "visual_lookup"
 
@@ -35,6 +42,7 @@ def test_multimodal_query_routes_to_text_and_image() -> None:
 
     assert route_enabled(decision, "text")
     assert route_enabled(decision, "image")
+    assert decision.search_image_vector is True
     assert decision.intent == "multimodal_lookup"
     assert decision.answer_policy.must_return_visual is True
 
@@ -47,7 +55,8 @@ def test_doc_lookup_routes_to_metadata() -> None:
     assert route_enabled(decision, "metadata")
     assert route_enabled(decision, "text")
     assert route_enabled(decision, "table")
-    assert route_enabled(decision, "image")
+    assert not route_enabled(decision, "image")
+    assert decision.search_image_vector is False
     assert decision.intent == "doc_lookup"
 
 
@@ -75,6 +84,7 @@ def test_route_decision_json_dump_is_stable() -> None:
 
     assert body["query"] == "XX 的预算金额是多少？"
     assert body["intent"] == "fact_qa"
+    assert body["search_image_vector"] is False
     assert len(body["routes"]) == 4
     table_route = next(route for route in body["routes"] if route["modality"] == "table")
     assert table_route["enabled"] is True
@@ -87,3 +97,163 @@ def test_llm_router_prompt_requires_strict_json() -> None:
     assert "输出严格 JSON" in prompt
     assert "不要输出解释文本" in prompt
     assert "找一下流程图" in prompt
+    assert "search_image_vector" in prompt
+
+
+def test_llm_router_uses_model_json_and_normalizes_image_route(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("LLM_MODEL", "router-model")
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "query": "系统架构怎么工作",
+                                    "intent": "fact_qa",
+                                    "search_image_vector": False,
+                                    "routes": [
+                                        {
+                                            "modality": "text",
+                                            "enabled": True,
+                                            "weight": 1.0,
+                                            "top_k": 30,
+                                        },
+                                        {
+                                            "modality": "table",
+                                            "enabled": True,
+                                            "weight": 1.0,
+                                            "top_k": 30,
+                                        },
+                                        {
+                                            "modality": "image",
+                                            "enabled": True,
+                                            "weight": 1.4,
+                                            "top_k": 10,
+                                        },
+                                        {
+                                            "modality": "metadata",
+                                            "enabled": False,
+                                            "weight": 0.5,
+                                            "top_k": 10,
+                                        },
+                                    ],
+                                    "answer_policy": {
+                                        "must_return_visual": False,
+                                        "must_cite_source": True,
+                                        "allow_no_answer": True,
+                                    },
+                                    "confidence": 0.91,
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    try:
+        decision = LLMQueryRouter(transport=httpx.MockTransport(handler)).route(
+            "系统架构怎么工作"
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.search_image_vector is False
+    assert not route_enabled(decision, "image")
+    assert decision.answer_policy.must_return_visual is False
+    assert captured["url"] == "https://llm.example/v1/chat/completions"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "router-model"
+
+
+def test_llm_router_enables_images_when_model_requests_image_vector(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LLM_MODEL", "router-model")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "query": "找一下系统架构图",
+                                    "intent": "visual_lookup",
+                                    "search_image_vector": True,
+                                    "routes": [
+                                        {
+                                            "modality": "text",
+                                            "enabled": True,
+                                            "weight": 1.0,
+                                            "top_k": 30,
+                                        },
+                                        {
+                                            "modality": "image",
+                                            "enabled": False,
+                                            "weight": 0.2,
+                                            "top_k": 10,
+                                        },
+                                    ],
+                                    "answer_policy": {
+                                        "must_return_visual": False,
+                                        "must_cite_source": True,
+                                        "allow_no_answer": True,
+                                    },
+                                    "confidence": 0.95,
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    try:
+        decision = LLMQueryRouter(transport=httpx.MockTransport(handler)).route(
+            "找一下系统架构图"
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.search_image_vector is True
+    assert route_enabled(decision, "image")
+    assert decision.answer_policy.must_return_visual is True
+
+
+def test_llm_router_falls_back_to_rules_on_invalid_json(monkeypatch: MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LLM_MODEL", "router-model")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}]})
+
+    try:
+        decision = LLMQueryRouter(transport=httpx.MockTransport(handler)).route("找一下流程图")
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.intent == "multimodal_lookup"
+    assert decision.search_image_vector is True
+    assert route_enabled(decision, "image")

@@ -8,7 +8,9 @@ from app.core.config import get_settings
 from app.core.errors import ApiError
 from app.models import ChunkMetadata, File, FileStatus, ParseJob, ParseJobStatus
 from app.services.bm25_index import BM25ChunkDocument, BM25IndexClientProtocol
+from app.services.chunk_text import build_indexable_chunk_text
 from app.services.embedding import EmbeddingClientProtocol
+from app.services.visual_citations import get_asset_paths, infer_chunk_modality
 from app.services.vector_index import VectorIndexClientProtocol
 
 
@@ -57,7 +59,7 @@ def index_parse_job(
     try:
         vectors = embed_texts_in_batches(
             embedding_client,
-            [chunk.content for chunk in chunks],
+            [build_indexable_chunk_text(chunk) for chunk in chunks],
         )
         validate_vectors(vectors=vectors, expected_count=len(chunks))
         vector_size = len(vectors[0])
@@ -66,7 +68,8 @@ def index_parse_job(
         points = []
         bm25_documents = []
         for chunk, vector in zip(chunks, vectors, strict=True):
-            write_chunk_tsv(db, chunk=chunk)
+            indexable_text = build_indexable_chunk_text(chunk)
+            write_chunk_tsv(db, chunk=chunk, content=indexable_text)
             points.append(
                 build_qdrant_point(file=file, parse_job=parse_job, chunk=chunk, vector=vector)
             )
@@ -155,16 +158,17 @@ def embed_texts_in_batches(
     return vectors
 
 
-def write_chunk_tsv(db: Session, *, chunk: ChunkMetadata) -> None:
+def write_chunk_tsv(db: Session, *, chunk: ChunkMetadata, content: str | None = None) -> None:
+    indexable_text = content if content is not None else build_indexable_chunk_text(chunk)
     dialect_name = db.get_bind().dialect.name
     if dialect_name == "postgresql":
         db.execute(
             update(ChunkMetadata)
             .where(ChunkMetadata.id == chunk.id)
-            .values(tsv=func.to_tsvector("simple", chunk.content))
+            .values(tsv=func.to_tsvector("simple", indexable_text))
         )
     else:
-        chunk.tsv = chunk.content
+        chunk.tsv = indexable_text
 
 
 def build_qdrant_point(
@@ -192,6 +196,9 @@ def build_qdrant_point(
             "row_start": chunk.row_start,
             "row_end": chunk.row_end,
             "heading_path": chunk.heading_path,
+            "description": chunk.description,
+            "asset_paths": get_asset_paths(chunk),
+            "modality": infer_chunk_modality(chunk),
             "is_active": chunk.is_active,
             "token_count": chunk.token_count,
             "content_hash": chunk.content_hash,
@@ -211,7 +218,7 @@ def build_bm25_document(
         file_id=str(chunk.file_id),
         parse_job_id=str(parse_job.id),
         file_name=file.file_name,
-        content=chunk.content,
+        content=build_indexable_chunk_text(chunk),
         source_locator=chunk.source_locator,
         source_type=chunk.source_type,
         heading_path=chunk.heading_path,

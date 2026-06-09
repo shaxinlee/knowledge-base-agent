@@ -1,3 +1,4 @@
+import json
 from collections.abc import Generator, Sequence
 from typing import Any
 from uuid import UUID
@@ -11,6 +12,7 @@ from app.api.v1.conversations import (
     get_bm25_index_client,
     get_embedding_client,
     get_llm_client,
+    get_query_router,
     get_reranker_client,
     get_vector_index_client,
 )
@@ -42,6 +44,7 @@ from app.services.auth import create_default_admin
 from app.services.bm25_index import BM25IndexClientProtocol, BM25SearchHit
 from app.services.embedding import EmbeddingClientProtocol
 from app.services.llm import LLMAnswer, LLMClientProtocol
+from app.rag.query_router import QueryRouterProtocol, RouteDecision, RuleBasedQueryRouter
 from app.services.reranker import RerankerClientProtocol
 from app.services.vector_index import VectorIndexClientProtocol, VectorSearchHit
 
@@ -153,6 +156,16 @@ class FakeLLMClient:
         yield answer.content
 
 
+class FakeQueryRouter:
+    def __init__(self) -> None:
+        self.rule_based_router = RuleBasedQueryRouter()
+        self.requests: list[str] = []
+
+    def route(self, query: str) -> RouteDecision:
+        self.requests.append(query)
+        return self.rule_based_router.route(query)
+
+
 def _make_session_factory() -> sessionmaker[Session]:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -178,6 +191,7 @@ def _install_overrides(
     reranker_client: FakeRerankerClient | None = None,
     llm_client: FakeLLMClient | None = None,
     bm25_index_client: FakeBM25IndexClient | None = None,
+    query_router: QueryRouterProtocol | None = None,
 ) -> None:
     def override_db() -> Generator[Session, None, None]:
         yield from _override_db(session_factory)
@@ -197,10 +211,14 @@ def _install_overrides(
     def override_bm25_index_client() -> BM25IndexClientProtocol:
         return bm25_index_client or FakeBM25IndexClient()
 
+    def override_query_router() -> QueryRouterProtocol:
+        return query_router or FakeQueryRouter()
+
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_embedding_client] = override_embedding_client
     app.dependency_overrides[get_bm25_index_client] = override_bm25_index_client
     app.dependency_overrides[get_llm_client] = override_llm_client
+    app.dependency_overrides[get_query_router] = override_query_router
     app.dependency_overrides[get_reranker_client] = override_reranker_client
     app.dependency_overrides[get_vector_index_client] = override_vector_index_client
 
@@ -284,6 +302,169 @@ def _seed_indexed_chunk(session_factory: sessionmaker[Session]) -> tuple[UUID, U
         db.add(chunk)
         db.commit()
         return knowledge_base.id, chunk.id
+
+
+def _seed_sectioned_chunks(
+    session_factory: sessionmaker[Session],
+) -> tuple[UUID, list[UUID]]:
+    with session_factory() as db:
+        create_default_admin(db)
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        assert admin is not None
+        reader = User(
+            email="reader@example.local",
+            username="reader",
+            password_hash=hash_password("ReaderPassword123"),
+            role=UserRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+        )
+        reader.profile = UserProfile(display_name="Reader")
+        knowledge_base = KnowledgeBase(
+            name="Section KB",
+            status=KnowledgeBaseStatus.ACTIVE.value,
+            settings={},
+            created_by=admin.id,
+        )
+        db.add_all([reader, knowledge_base])
+        db.flush()
+
+        file = File(
+            knowledge_base_id=knowledge_base.id,
+            file_name="section.md",
+            file_ext=".md",
+            mime_type="text/markdown",
+            file_size=1024,
+            file_hash="s" * 64,
+            storage_bucket="raw-files",
+            storage_key="section",
+            status=FileStatus.INDEXED.value,
+            created_by=admin.id,
+        )
+        db.add(file)
+        db.flush()
+        parse_job = ParseJob(
+            file_id=file.id,
+            knowledge_base_id=knowledge_base.id,
+            status=ParseJobStatus.INDEXED.value,
+            progress=100,
+            created_by=admin.id,
+        )
+        db.add(parse_job)
+        db.flush()
+
+        long_middle_content = "middle matched evidence " + ("x" * 360) + " complete ending"
+        chunk_contents = [
+            ("section opening context", ["Guide", "Install"], "md:Guide > Install#part-1"),
+            (long_middle_content, ["Guide", "Install"], "md:Guide > Install#part-2"),
+            ("section closing context", ["Guide", "Install"], "md:Guide > Install#part-3"),
+            ("next section should not be included", ["Guide", "Usage"], "md:Guide > Usage"),
+        ]
+        chunks: list[ChunkMetadata] = []
+        for index, (content, heading_path, source_locator) in enumerate(chunk_contents):
+            chunk = ChunkMetadata(
+                knowledge_base_id=knowledge_base.id,
+                file_id=file.id,
+                parse_job_id=parse_job.id,
+                chunk_index=index,
+                content=content,
+                content_hash=f"{index}" * 64,
+                token_count=3,
+                source_type="md",
+                source_locator=source_locator,
+                heading_path=heading_path,
+                is_active=True,
+                tsv=content,
+            )
+            db.add(chunk)
+            chunks.append(chunk)
+        db.commit()
+        return knowledge_base.id, [chunk.id for chunk in chunks]
+
+
+def _seed_visual_chunks(session_factory: sessionmaker[Session]) -> tuple[UUID, list[UUID]]:
+    with session_factory() as db:
+        create_default_admin(db)
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        assert admin is not None
+        reader = User(
+            email="reader@example.local",
+            username="reader",
+            password_hash=hash_password("ReaderPassword123"),
+            role=UserRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+        )
+        reader.profile = UserProfile(display_name="Reader")
+        knowledge_base = KnowledgeBase(
+            name="Visual KB",
+            status=KnowledgeBaseStatus.ACTIVE.value,
+            settings={},
+            created_by=admin.id,
+        )
+        db.add_all([reader, knowledge_base])
+        db.flush()
+
+        file = File(
+            knowledge_base_id=knowledge_base.id,
+            file_name="architecture.pdf",
+            file_ext=".pdf",
+            mime_type="application/pdf",
+            file_size=2048,
+            file_hash="v" * 64,
+            storage_bucket="raw-files",
+            storage_key="architecture",
+            status=FileStatus.INDEXED.value,
+            created_by=admin.id,
+        )
+        db.add(file)
+        db.flush()
+        parse_job = ParseJob(
+            file_id=file.id,
+            knowledge_base_id=knowledge_base.id,
+            status=ParseJobStatus.INDEXED.value,
+            progress=100,
+            created_by=admin.id,
+        )
+        db.add(parse_job)
+        db.flush()
+
+        chunks = [
+            ChunkMetadata(
+                knowledge_base_id=knowledge_base.id,
+                file_id=file.id,
+                parse_job_id=parse_job.id,
+                chunk_index=0,
+                content="系统架构文字说明",
+                content_hash="t" * 64,
+                token_count=8,
+                source_type="pdf",
+                source_locator="pdf:p1",
+                is_active=True,
+                tsv="系统架构文字说明",
+            ),
+            ChunkMetadata(
+                knowledge_base_id=knowledge_base.id,
+                file_id=file.id,
+                parse_job_id=parse_job.id,
+                chunk_index=1,
+                content=(
+                    "系统架构图 OCR：Frontend -> Backend -> Qdrant\n\n"
+                    "![](images/architecture.png)\n"
+                    "![](images/connection.jpg)"
+                ),
+                content_hash="i" * 64,
+                token_count=12,
+                source_type="pdf",
+                source_locator="image:ocr-region-1",
+                chunk_metadata={
+                    "document_block_types": ["image_ocr"],
+                },
+                is_active=True,
+                tsv="系统架构图 OCR Frontend Backend Qdrant",
+            ),
+        ]
+        db.add_all(chunks)
+        db.commit()
+        return knowledge_base.id, [chunk.id for chunk in chunks]
 
 
 def _seed_empty_knowledge_base(session_factory: sessionmaker[Session]) -> UUID:
@@ -391,6 +572,244 @@ def test_user_can_create_conversation_and_send_non_stream_message_with_citation(
         app.dependency_overrides.clear()
 
 
+def test_message_context_expands_matched_chunk_to_full_section() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, chunk_ids = _seed_sectioned_chunks(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(
+        hits=[
+            VectorSearchHit(
+                point_id=str(chunk_ids[1]),
+                score=0.9,
+                payload={
+                    "chunk_id": str(chunk_ids[1]),
+                    "knowledge_base_id": str(knowledge_base_id),
+                },
+            )
+        ]
+    )
+    reranker_client = FakeRerankerClient(scores=[0.75])
+    llm_client = FakeLLMClient()
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Section Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "matched evidence", "stream": False},
+        )
+        assert message_response.status_code == 200
+
+        contexts = llm_client.requests[0]["contexts"]
+        assert [context.chunk_id for context in contexts] == [
+            str(chunk_ids[0]),
+            str(chunk_ids[1]),
+            str(chunk_ids[2]),
+        ]
+        assert contexts[1].excerpt.endswith("complete ending")
+        assert all(
+            "next section should not be included" not in context.excerpt for context in contexts
+        )
+
+        assistant = message_response.json()["assistant_message"]
+        assert [citation["chunk_id"] for citation in assistant["citations"]] == [
+            str(chunk_ids[0]),
+            str(chunk_ids[1]),
+            str(chunk_ids[2]),
+        ]
+
+        with session_factory() as db:
+            trace = db.scalar(select(MessageTrace))
+        assert trace is not None
+        assert trace.retrieved_chunk_ids == [str(chunk_ids[1])]
+        assert trace.final_context_chunk_ids == [
+            str(chunk_ids[0]),
+            str(chunk_ids[1]),
+            str(chunk_ids[2]),
+        ]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_visual_query_routes_image_context_and_returns_image_citation() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, chunk_ids = _seed_visual_chunks(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(
+        hits=[
+            VectorSearchHit(
+                point_id=str(chunk_ids[0]),
+                score=0.9,
+                payload={
+                    "chunk_id": str(chunk_ids[0]),
+                    "knowledge_base_id": str(knowledge_base_id),
+                },
+            ),
+            VectorSearchHit(
+                point_id=str(chunk_ids[1]),
+                score=0.8,
+                payload={
+                    "chunk_id": str(chunk_ids[1]),
+                    "knowledge_base_id": str(knowledge_base_id),
+                },
+            ),
+        ]
+    )
+    reranker_client = FakeRerankerClient(scores=[0.9, 0.8])
+    llm_client = FakeLLMClient()
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Visual Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "找一下系统架构图", "stream": False},
+        )
+        assert message_response.status_code == 200
+
+        contexts = llm_client.requests[0]["contexts"]
+        assert contexts[0].chunk_id == str(chunk_ids[1])
+        assert contexts[0].modality == "image"
+        assert contexts[0].image_url == (
+            f"/api/v1/files/{contexts[0].file_id}/assets?path=images%2Farchitecture.png"
+        )
+        assert contexts[0].image_urls == [
+            f"/api/v1/files/{contexts[0].file_id}/assets?path=images%2Farchitecture.png",
+            f"/api/v1/files/{contexts[0].file_id}/assets?path=images%2Fconnection.jpg",
+        ]
+        assert "images/" not in contexts[0].excerpt
+
+        citations = message_response.json()["assistant_message"]["citations"]
+        image_citation = next(citation for citation in citations if citation["modality"] == "image")
+        assert image_citation["chunk_id"] == str(chunk_ids[1])
+        assert image_citation["image_url"].endswith("path=images%2Farchitecture.png")
+        assert len(image_citation["image_urls"]) == 2
+        assert "系统架构图 OCR" in image_citation["image_alt"]
+        assert "images/" not in image_citation["excerpt"]
+        assert "images/" not in image_citation["image_alt"]
+
+        with session_factory() as db:
+            image_row = db.scalar(
+                select(MessageCitation).where(MessageCitation.chunk_id == chunk_ids[1])
+            )
+        assert image_row is not None
+        assert image_row.allow_images is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_non_visual_query_suppresses_image_context_and_history_citation_images() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, chunk_ids = _seed_visual_chunks(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(
+        hits=[
+            VectorSearchHit(
+                point_id=str(chunk_ids[1]),
+                score=0.9,
+                payload={
+                    "chunk_id": str(chunk_ids[1]),
+                    "knowledge_base_id": str(knowledge_base_id),
+                },
+            ),
+        ]
+    )
+    reranker_client = FakeRerankerClient(scores=[0.9])
+    llm_client = FakeLLMClient()
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Text Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "系统架构怎么工作", "stream": False},
+        )
+        assert message_response.status_code == 200
+
+        contexts = llm_client.requests[0]["contexts"]
+        assert contexts[0].chunk_id == str(chunk_ids[1])
+        assert contexts[0].modality == "text"
+        assert contexts[0].image_url is None
+        assert contexts[0].image_urls == []
+        assert "images/" not in contexts[0].excerpt
+        assert "![]" not in contexts[0].excerpt
+
+        citations = message_response.json()["assistant_message"]["citations"]
+        assert citations[0]["modality"] == "text"
+        assert citations[0]["image_url"] is None
+        assert citations[0]["image_urls"] == []
+        assert "images/" not in citations[0]["excerpt"]
+
+        detail_response = client.get(
+            f"/api/v1/conversations/{conversation_id}",
+            headers=_headers(token),
+        )
+        assert detail_response.status_code == 200
+        assistant = next(
+            message
+            for message in detail_response.json()["messages"]
+            if message["role"] == "assistant"
+        )
+        assert assistant["citations"][0]["image_url"] is None
+        assert assistant["citations"][0]["image_urls"] == []
+        assert "images/" not in assistant["citations"][0]["excerpt"]
+
+        with session_factory() as db:
+            citation = db.scalar(select(MessageCitation))
+        assert citation is not None
+        assert citation.allow_images is False
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_user_can_send_stream_message_and_receive_sse_events() -> None:
     session_factory = _make_session_factory()
     knowledge_base_id, chunk_id = _seed_indexed_chunk(session_factory)
@@ -429,6 +848,17 @@ def test_user_can_send_stream_message_and_receive_sse_events() -> None:
         assert "event: retrieval" in text
         assert "event: token" in text
         assert "event: done" in text
+        assert text.index("event: message_created") < text.index("event: retrieval")
+        assert text.index("event: retrieval") < text.index("event: token")
+        assert text.index("event: token") < text.index("event: done")
+        first_event_data = next(
+            line.removeprefix("data: ").strip()
+            for line in text.split("\n\n")[0].splitlines()
+            if line.startswith("data:")
+        )
+        first_event = json.loads(first_event_data)
+        assert first_event["user_message"]["content"] == "demo answer"
+        assert first_event["assistant_message"]["content"] == ""
         assert str(chunk_id) in text
         assert "LLM answer for demo answer [1]" in text
 

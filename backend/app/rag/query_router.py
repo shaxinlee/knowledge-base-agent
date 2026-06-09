@@ -1,10 +1,17 @@
 import json
 import re
-from typing import Literal
+from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field
+import httpx
+from pydantic import BaseModel, Field, ValidationError
 
+from app.core.config import get_settings
 from app.core.errors import ApiError
+from app.services.llm import (
+    build_chat_completions_url,
+    build_llm_headers,
+    parse_chat_completion_content,
+)
 
 Modality = Literal["text", "table", "image", "metadata"]
 Intent = Literal[
@@ -111,9 +118,17 @@ class AnswerPolicy(BaseModel):
 class RouteDecision(BaseModel):
     query: str
     intent: Intent
+    search_image_vector: bool = False
     routes: list[RouteItem]
     answer_policy: AnswerPolicy
     confidence: float = Field(ge=0, le=1)
+
+    def normalized(self) -> "RouteDecision":
+        return normalize_route_decision(self)
+
+
+class QueryRouterProtocol(Protocol):
+    def route(self, query: str) -> RouteDecision: ...
 
 
 class RuleBasedQueryRouter:
@@ -197,10 +212,11 @@ class RuleBasedQueryRouter:
         return RouteDecision(
             query=normalized_query,
             intent=intent,
+            search_image_vector=must_return_visual,
             routes=routes,
             answer_policy=AnswerPolicy(must_return_visual=must_return_visual),
             confidence=confidence,
-        )
+        ).normalized()
 
 
 class LLMQueryRouter:
@@ -214,6 +230,8 @@ class LLMQueryRouter:
 
 规则：
 - 如果用户明确提到图、图片、截图、架构图、流程图、曲线图、柱状图、界面、UI，则 image=true。
+- 只有用户明确想查看图片、截图、图表、架构图、流程图、页面图等视觉内容时，search_image_vector=true。
+- 普通事实问答、总结、解释、查日期/金额/负责人/状态时，search_image_vector=false，即使相关文档里可能包含图片。
 - 如果用户询问日期、金额、数量、状态、负责人、版本、清单、列表，应 table=true，同时 text=true。
 - 如果用户询问条款、定义、说明、原因、流程、政策，应 text=true。
 - 如果问题不明确，默认 text=true；对于事实型字段问题，同时 table=true。
@@ -226,6 +244,9 @@ class LLMQueryRouter:
 {schema}
 """
 
+    def __init__(self, *, transport: httpx.BaseTransport | None = None) -> None:
+        self.transport = transport
+
     def build_prompt(self, query: str) -> str:
         schema = json.dumps(
             {
@@ -234,6 +255,7 @@ class LLMQueryRouter:
                     "fact_qa | visual_lookup | table_lookup | multimodal_lookup | "
                     "doc_lookup | summarization | comparison | unknown"
                 ),
+                "search_image_vector": False,
                 "routes": [
                     {"modality": "text", "enabled": True, "weight": 1.0, "top_k": 30},
                     {"modality": "table", "enabled": True, "weight": 1.0, "top_k": 30},
@@ -252,12 +274,122 @@ class LLMQueryRouter:
         return self.prompt_template.format(query=query, schema=schema)
 
     def route(self, query: str) -> RouteDecision:
-        raise ApiError(
-            code="LLM_ROUTER_NOT_CONFIGURED",
-            message="LLM query router is reserved but not configured.",
-            status_code=501,
-            details={"prompt": self.build_prompt(query)},
-        )
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Query cannot be empty.",
+                status_code=422,
+            )
+
+        settings = get_settings()
+        base_url = settings.llm_api_base_url.strip() or settings.llm_api_base.strip()
+        model = settings.llm_model.strip()
+        if not base_url or not model:
+            return RuleBasedQueryRouter().route(normalized_query)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是知识库检索路由器。你只能输出一个 JSON 对象，"
+                    "不要输出 markdown、解释或额外文本。"
+                ),
+            },
+            {"role": "user", "content": self.build_prompt(normalized_query)},
+        ]
+        payload = {"model": model, "messages": messages, "stream": False}
+        try:
+            with httpx.Client(timeout=30, transport=self.transport) as client:
+                response = client.post(
+                    build_chat_completions_url(base_url),
+                    headers=build_llm_headers(settings.llm_api_key),
+                    json=payload,
+                )
+                response.raise_for_status()
+            content = parse_chat_completion_content(response.json())
+            return parse_route_decision(content, fallback_query=normalized_query)
+        except (httpx.HTTPError, ValueError, ValidationError, ApiError):
+            return RuleBasedQueryRouter().route(normalized_query)
+
+
+def parse_route_decision(content: str, *, fallback_query: str) -> RouteDecision:
+    payload = extract_json_object(content)
+    if not isinstance(payload, dict):
+        raise ValueError("Router output must be a JSON object.")
+    payload["query"] = str(payload.get("query") or fallback_query).strip() or fallback_query
+    return RouteDecision.model_validate(payload).normalized()
+
+
+def extract_json_object(content: str) -> Any:
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end < start:
+            raise
+        return json.loads(stripped[start : end + 1])
+
+
+def get_query_router() -> QueryRouterProtocol:
+    return LLMQueryRouter()
+
+
+def route_enabled(routes: list[RouteItem], modality: Modality) -> bool:
+    return any(route.modality == modality and route.enabled for route in routes)
+
+
+def build_normalized_routes(
+    routes: list[RouteItem],
+    *,
+    search_image_vector: bool,
+) -> list[RouteItem]:
+    routes_by_modality = {route.modality: route for route in routes}
+    normalized_routes: list[RouteItem] = []
+    defaults = {
+        "text": RouteItem(modality="text", enabled=True, weight=1.0, top_k=30),
+        "table": RouteItem(modality="table", enabled=True, weight=1.0, top_k=30),
+        "image": RouteItem(modality="image", enabled=False, weight=0.2, top_k=10),
+        "metadata": RouteItem(modality="metadata", enabled=False, weight=0.5, top_k=10),
+    }
+    for modality in MODALITIES:
+        route = routes_by_modality.get(modality, defaults[modality])
+        if modality == "image":
+            route = route.model_copy(
+                update={
+                    "enabled": search_image_vector,
+                    "weight": max(route.weight, 1.0) if search_image_vector else route.weight,
+                }
+            )
+        normalized_routes.append(route)
+    if not route_enabled(normalized_routes, "text"):
+        normalized_routes[0] = normalized_routes[0].model_copy(update={"enabled": True})
+    return normalized_routes
+
+
+def normalize_route_decision(decision: RouteDecision) -> RouteDecision:
+    search_image_vector = bool(decision.search_image_vector)
+    if decision.answer_policy.must_return_visual:
+        search_image_vector = True
+    normalized_routes = build_normalized_routes(
+        decision.routes,
+        search_image_vector=search_image_vector,
+    )
+    answer_policy = decision.answer_policy.model_copy(
+        update={"must_return_visual": search_image_vector}
+    )
+    return decision.model_copy(
+        update={
+            "search_image_vector": search_image_vector,
+            "routes": normalized_routes,
+            "answer_policy": answer_policy,
+        }
+    )
 
 
 def contains_any(query: str, keywords: tuple[str, ...]) -> bool:

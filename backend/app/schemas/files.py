@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FileResponse(BaseModel):
@@ -71,6 +71,14 @@ class ChunkDebugResponse(BaseModel):
     file_id: str
     knowledge_base_id: str
     content: str
+    description: str | None = None
+    modality: str = "text"
+    image_url: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
+    image_alt: str | None = None
+    asset_paths: list[str] = Field(default_factory=list)
+    document_block_types: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     source_locator: str
     token_count: int
     is_active: bool

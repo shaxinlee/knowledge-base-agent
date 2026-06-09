@@ -60,8 +60,8 @@ def test_multimodal_retriever_calls_enabled_modalities_only() -> None:
 
     results = retriever.retrieve(query=decision.query, route_decision=decision)
 
-    assert calls == [("text", 30), ("table", 30), ("image", 10), ("metadata", 10)]
-    assert {result.modality for result in results} == {"text", "table", "image", "metadata"}
+    assert calls == [("text", 30), ("table", 30), ("metadata", 10)]
+    assert {result.modality for result in results} == {"text", "table", "metadata"}
 
 
 def test_multimodal_retriever_fuses_results_with_weighted_rrf() -> None:

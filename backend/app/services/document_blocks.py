@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import ApiError
 from app.models import DocumentBlock, File, FileStatus, ParseJob, ParseJobStatus
 from app.schemas.files import ChunkDebugListResponse, ChunkDebugResponse
+from app.services.content_normalization import normalize_special_elements
 from app.services.object_storage import ObjectStorage
 
 TEXT_EXTENSIONS = {".md", ".markdown"}
@@ -138,7 +139,7 @@ def extract_blocks_from_zip(result_bytes: bytes) -> list[NormalizedBlock]:
 
 
 def parse_markdown_blocks(content: bytes, *, source_name: str) -> list[NormalizedBlock]:
-    text = content.decode("utf-8", errors="ignore")
+    text = normalize_special_elements(content.decode("utf-8", errors="ignore"))
     blocks: list[NormalizedBlock] = []
     heading_path: list[str] = []
     for paragraph in split_markdown(text):
@@ -266,10 +267,10 @@ def get_candidate_text(candidate: dict[str, Any]) -> str:
     for key in ("content", "text", "md", "markdown", "html"):
         value = candidate.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return normalize_special_elements(value.strip())
     table_body = candidate.get("table_body")
     if isinstance(table_body, str) and table_body.strip():
-        return table_body.strip()
+        return normalize_special_elements(table_body.strip())
     lines = candidate.get("lines")
     if isinstance(lines, list):
         line_texts = [get_candidate_text(line) for line in lines if isinstance(line, dict)]
@@ -303,6 +304,14 @@ def build_block_debug_response(block: DocumentBlock) -> ChunkDebugResponse:
         file_id=str(block.file_id),
         knowledge_base_id=str(block.knowledge_base_id),
         content=content,
+        description=None,
+        modality=block.block_type or "text",
+        image_url=None,
+        image_urls=[],
+        image_alt=None,
+        asset_paths=[],
+        document_block_types=[block.block_type] if block.block_type else [],
+        metadata=block.block_metadata or {},
         source_locator=build_source_locator(block),
         token_count=count_tokens(content),
         is_active=True,

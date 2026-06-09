@@ -87,9 +87,7 @@ export async function logout(payload: LogoutRequest): Promise<void> {
   })
 }
 
-export async function listUsers(
-  query: UserListQuery = {},
-): Promise<PaginatedResponse<User>> {
+export async function listUsers(query: UserListQuery = {}): Promise<PaginatedResponse<User>> {
   const params = new URLSearchParams()
   params.set('page', String(query.page ?? 1))
   params.set('page_size', String(query.page_size ?? 50))
@@ -331,10 +329,7 @@ export async function streamConversationMessage(
   }
 }
 
-function dispatchSseEvent(
-  rawEvent: string,
-  handlers: ConversationMessageStreamHandlers,
-): void {
+function dispatchSseEvent(rawEvent: string, handlers: ConversationMessageStreamHandlers): void {
   const lines = rawEvent.split('\n')
   const event = lines
     .find((line) => line.startsWith('event:'))
@@ -367,6 +362,40 @@ export async function submitMessageFeedback(
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function loadAuthorizedAssetObjectUrl(assetUrl: string): Promise<string> {
+  if (assetUrl.startsWith('data:image/')) {
+    return assetUrl
+  }
+  if (assetUrl.startsWith('http://') || assetUrl.startsWith('https://')) {
+    return assetUrl
+  }
+
+  const requestUrl = buildAssetRequestUrl(assetUrl)
+  const headers = new Headers()
+  const token = getAccessToken()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  const response = await fetch(requestUrl, { headers })
+  if (!response.ok) {
+    throw await readError(response)
+  }
+  return URL.createObjectURL(await response.blob())
+}
+
+function buildAssetRequestUrl(assetUrl: string): string {
+  if (assetUrl.startsWith(API_BASE_URL)) {
+    return assetUrl
+  }
+  if (assetUrl.startsWith('/api/v1')) {
+    return `${API_BASE_URL}${assetUrl.slice('/api/v1'.length)}`
+  }
+  if (assetUrl.startsWith('/')) {
+    return `${API_BASE_URL}${assetUrl}`
+  }
+  return assetUrl
 }
 
 export async function listAuditLogs(
@@ -427,7 +456,11 @@ async function readError(response: Response): Promise<ApiClientError> {
     const code = payload.error?.code
     const message = payload.error?.message
     const details = payload.error?.details ?? {}
-    return new ApiClientError([code, message].filter(Boolean).join(': ') || response.statusText, code, details)
+    return new ApiClientError(
+      [code, message].filter(Boolean).join(': ') || response.statusText,
+      code,
+      details,
+    )
   } catch {
     return new ApiClientError(response.statusText)
   }

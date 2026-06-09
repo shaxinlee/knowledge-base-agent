@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_base: str = ""
     llm_model: str = ""
+    image_description_enabled: bool = True
+    image_description_api_base_url: str = ""
+    image_description_api_key: str = ""
+    image_description_model: str = "qwen3.6-flash"
+    image_description_timeout_seconds: int = 120
     evidence_min_reranker_score: float | None = None
     qdrant_url: str = "http://qdrant:6333"
     qdrant_collection: str = "chunks"

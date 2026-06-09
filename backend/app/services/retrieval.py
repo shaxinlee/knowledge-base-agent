@@ -11,10 +11,18 @@ from app.schemas.retrieval import (
     RetrievalSearchRequest,
     RetrievalSearchResponse,
 )
+from app.services.content_normalization import normalize_special_elements
 from app.services.bm25_index import BM25IndexClientProtocol
+from app.services.chunk_text import build_display_chunk_text, build_indexable_chunk_text
 from app.services.embedding import EmbeddingClientProtocol
 from app.services.reranker import RerankerClientProtocol
 from app.services.vector_index import VectorIndexClientProtocol, VectorSearchHit
+from app.services.visual_citations import (
+    build_chunk_image_alt,
+    build_chunk_image_url,
+    build_chunk_image_urls,
+    infer_chunk_modality,
+)
 
 
 @dataclass
@@ -96,9 +104,13 @@ def search_knowledge_base(
                 file_id=str(file.id),
                 file_name=file.file_name,
                 source_locator=chunk.source_locator,
-                excerpt=build_excerpt(chunk.content),
+                excerpt=build_excerpt(build_display_chunk_text(chunk)),
                 score=candidate.score,
                 source=candidate.source,
+                modality=infer_chunk_modality(chunk),
+                image_url=build_chunk_image_url(chunk),
+                image_urls=build_chunk_image_urls(chunk),
+                image_alt=build_chunk_image_alt(chunk, file),
             )
         )
 
@@ -123,7 +135,8 @@ def rerank_candidates(
     if not candidates_with_chunks:
         return []
     documents = [
-        chunks_by_id[candidate.chunk_id][0].content for candidate in candidates_with_chunks
+        build_indexable_chunk_text(chunks_by_id[candidate.chunk_id][0])
+        for candidate in candidates_with_chunks
     ]
     scores = reranker_client.rerank(query=query, documents=documents)
     reranked: list[RetrievalCandidate] = []
@@ -298,8 +311,11 @@ def search_sqlite_full_text(
     limit: int,
 ) -> list[RetrievalCandidate]:
     words = [word.strip() for word in query.split() if word.strip()]
-    filters = [ChunkMetadata.content.ilike(f"%{word}%") for word in words] or [
+    content_filters = [ChunkMetadata.content.ilike(f"%{word}%") for word in words] or [
         ChunkMetadata.content.ilike(f"%{query}%")
+    ]
+    description_filters = [ChunkMetadata.description.ilike(f"%{word}%") for word in words] or [
+        ChunkMetadata.description.ilike(f"%{query}%")
     ]
     rows = db.execute(
         select(ChunkMetadata.id, literal(1.0))
@@ -307,7 +323,7 @@ def search_sqlite_full_text(
         .where(
             ChunkMetadata.knowledge_base_id == knowledge_base_id,
             ChunkMetadata.is_active.is_(True),
-            or_(*filters),
+            or_(*content_filters, *description_filters),
             File.deleted_at.is_(None),
             File.status == FileStatus.INDEXED.value,
         )
@@ -363,7 +379,7 @@ def load_chunks(
 
 
 def build_excerpt(content: str, *, max_length: int = 300) -> str:
-    normalized = " ".join(content.split())
+    normalized = " ".join(normalize_special_elements(content).split())
     if len(normalized) <= max_length:
         return normalized
     return f"{normalized[: max_length - 3]}..."

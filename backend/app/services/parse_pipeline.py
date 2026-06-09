@@ -15,6 +15,11 @@ from app.services.chunks import generate_chunks_for_parse_job
 from app.services.document_blocks import normalize_parse_job_result
 from app.services.embedding import EmbeddingClientProtocol, get_embedding_client
 from app.services.files import poll_mineru_parse_job, submit_queued_parse_job
+from app.services.image_descriptions import (
+    ImageDescriptionClientProtocol,
+    enrich_image_chunk_descriptions,
+    get_image_description_client,
+)
 from app.services.indexing import index_parse_job
 from app.services.mineru import MineruClient, get_mineru_client
 from app.services.object_storage import ObjectStorage, get_object_storage
@@ -47,12 +52,14 @@ def process_pending_parse_jobs_once(
     embedding_client: EmbeddingClientProtocol | None = None,
     vector_index_client: VectorIndexClientProtocol | None = None,
     bm25_index_client: BM25IndexClientProtocol | None = None,
+    image_description_client: ImageDescriptionClientProtocol | None = None,
 ) -> int:
     storage = storage or get_object_storage()
     mineru_client = mineru_client or get_mineru_client()
     embedding_client = embedding_client or get_embedding_client()
     vector_index_client = vector_index_client or get_vector_index_client()
     bm25_index_client = bm25_index_client or get_bm25_index_client()
+    image_description_client = image_description_client or get_image_description_client()
 
     with session_factory() as db:
         parse_job_ids = list(
@@ -81,6 +88,7 @@ def process_pending_parse_jobs_once(
                     embedding_client=embedding_client,
                     vector_index_client=vector_index_client,
                     bm25_index_client=bm25_index_client,
+                    image_description_client=image_description_client,
                 )
             )
         except Exception:
@@ -97,8 +105,10 @@ def run_parse_job_until_waiting(
     embedding_client: EmbeddingClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    image_description_client: ImageDescriptionClientProtocol | None = None,
     max_steps: int = 8,
 ) -> bool:
+    image_description_client = image_description_client or get_image_description_client()
     advanced = False
     with session_factory() as db:
         for _step in range(max_steps):
@@ -110,6 +120,7 @@ def run_parse_job_until_waiting(
                 embedding_client=embedding_client,
                 vector_index_client=vector_index_client,
                 bm25_index_client=bm25_index_client,
+                image_description_client=image_description_client,
             )
             if not did_advance:
                 break
@@ -131,6 +142,7 @@ def run_parse_job_background(
     embedding_client: EmbeddingClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    image_description_client: ImageDescriptionClientProtocol | None = None,
 ) -> None:
     try:
         run_parse_job_until_waiting(
@@ -141,6 +153,7 @@ def run_parse_job_background(
             embedding_client=embedding_client,
             vector_index_client=vector_index_client,
             bm25_index_client=bm25_index_client,
+            image_description_client=image_description_client,
         )
     except Exception:
         logger.exception("Background parse job failed for parse_job_id=%s", parse_job_id)
@@ -155,6 +168,7 @@ def advance_parse_job_once(
     embedding_client: EmbeddingClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    image_description_client: ImageDescriptionClientProtocol,
 ) -> bool:
     parse_job = db.get(ParseJob, parse_job_id)
     if parse_job is None:
@@ -186,6 +200,13 @@ def advance_parse_job_once(
     elif parse_job.status == ParseJobStatus.CHUNKING.value:
         generate_chunks_for_parse_job(db, file=file, parse_job=parse_job)
     elif parse_job.status == ParseJobStatus.EMBEDDING.value:
+        enrich_image_chunk_descriptions(
+            db,
+            file=file,
+            parse_job=parse_job,
+            storage=storage,
+            image_description_client=image_description_client,
+        )
         index_parse_job(
             db,
             file=file,

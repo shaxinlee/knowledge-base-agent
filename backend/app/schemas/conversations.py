@@ -23,6 +23,10 @@ class CitationResponse(BaseModel):
     source_locator: str
     excerpt: str
     chunk_id: str
+    modality: str = "text"
+    image_url: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
+    image_alt: str | None = None
 
 
 class MessageResponse(BaseModel):

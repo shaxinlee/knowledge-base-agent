@@ -140,7 +140,8 @@ def build_error_response_excerpt(exc: httpx.HTTPError) -> str | None:
     response = getattr(exc, "response", None)
     if response is None:
         return None
-    return response.text[:500]
+    text = response.text
+    return text[:500] if isinstance(text, str) else None
 
 
 def should_use_dashscope_reranker(*, base_url: str, model: str) -> bool:

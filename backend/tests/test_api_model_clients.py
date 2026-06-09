@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from typing import Any, cast
 
 import httpx
@@ -13,6 +14,10 @@ from app.services.embedding import (
 )
 from app.services.indexing import clear_indexing_error_log, embed_texts_in_batches
 from app.rag.embeddings.qwen_multimodal import QwenMultimodalEmbeddingProvider
+from app.services.image_descriptions import (
+    ImageDescriptionInput,
+    OpenAIVisionImageDescriptionClient,
+)
 from app.services.llm import LLMApiClient
 from app.services.reranker import DashScopeTextRerankerClient, RerankerClient
 
@@ -23,7 +28,7 @@ class RecordingEmbeddingClient:
     def __init__(self) -> None:
         self.requests: list[list[str]] = []
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         self.requests.append(list(texts))
         return [[float(len(text))] for text in texts]
 
@@ -183,6 +188,50 @@ def test_qwen_multimodal_embedding_selection_only_matches_vl_models() -> None:
     assert not should_use_qwen_multimodal_embedding("bge-m3")
 
 
+def test_image_description_client_calls_openai_compatible_vision_model() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "图片展示系统架构图。"}}]},
+        )
+
+    client = OpenAIVisionImageDescriptionClient(
+        base_url="https://vision.example/v1",
+        api_key="vision-key",
+        model="qwen3.6-flash",
+        transport=httpx.MockTransport(handler),
+    )
+
+    description = client.describe_image(
+        ImageDescriptionInput(
+            image_bytes=b"fake-png",
+            media_type="image/png",
+            context_text="Frontend -> Backend",
+            source_locator="pdf:p1",
+            file_name="architecture.pdf",
+        )
+    )
+
+    assert description == "图片展示系统架构图。"
+    assert captured["url"] == "https://vision.example/v1/chat/completions"
+    payload = cast(dict[str, Any], captured["payload"])
+    assert payload["model"] == "qwen3.6-flash"
+    content = cast(
+        list[dict[str, Any]], cast(list[dict[str, Any]], payload["messages"])[0]["content"]
+    )
+    assert content[0]["type"] == "text"
+    assert "Frontend -> Backend" in content[0]["text"]
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    headers = cast(dict[str, Any], captured["headers"])
+    assert headers["authorization"] == "Bearer vision-key"
+
+
 def test_embedding_indexing_batches_requests_without_reordering_vectors() -> None:
     client = RecordingEmbeddingClient()
 
@@ -314,7 +363,9 @@ def test_llm_api_client_generates_answer_with_citation_prompt() -> None:
     payload = cast(dict[str, Any], captured["payload"])
     assert payload["model"] == "test-chat"
     assert payload["stream"] is False
-    assert "manual.pdf" in answer.raw_prompt_snapshot
+    assert "manual.pdf" not in answer.raw_prompt_snapshot
+    assert "pdf:p1" not in answer.raw_prompt_snapshot
+    assert "Grounding text." in answer.raw_prompt_snapshot
     headers = cast(dict[str, Any], captured["headers"])
     assert headers["authorization"] == "Bearer llm-key"
 

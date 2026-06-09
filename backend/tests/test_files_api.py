@@ -1,7 +1,8 @@
 from collections.abc import Generator, Sequence
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.v1.files import (
     get_bm25_index_client,
     get_embedding_client,
+    get_image_description_client,
     get_mineru_client,
     get_object_storage,
     get_vector_index_client,
@@ -27,9 +29,11 @@ from app.models import (
     ChunkMetadata,
     DocumentBlock,
     File,
+    FileStatus,
     KnowledgeBase,
     KnowledgeBaseStatus,
     ParseJob,
+    ParseJobStatus,
     User,
     UserProfile,
     UserRole,
@@ -37,9 +41,10 @@ from app.models import (
 )
 from app.services.auth import create_default_admin
 from app.services.bm25_index import BM25ChunkDocument, BM25IndexClientProtocol
-from app.services.chunks import build_chunk_drafts
+from app.services.chunks import build_chunk_drafts, build_chunk_response
 from app.services.document_blocks import extract_blocks_from_zip
 from app.services.embedding import EmbeddingClientProtocol
+from app.services.image_descriptions import ImageDescriptionClientProtocol, ImageDescriptionInput
 from app.services.mineru import MineruClient, MineruSubmission
 from app.services.object_storage import ObjectStorage
 from app.services.vector_index import VectorIndexClientProtocol, VectorSearchHit
@@ -76,11 +81,13 @@ class FakeMineruClient:
         full_zip_url: str | None = "https://example.local/mineru-full.zip",
         error_message: str = "MinerU parse failed.",
         submit_error_message: str | None = None,
+        result_zip: bytes | None = None,
     ) -> None:
         self.result_state = result_state
         self.full_zip_url = full_zip_url
         self.error_message = error_message
         self.submit_error_message = submit_error_message
+        self.result_zip = result_zip
         self.submissions: list[dict[str, object]] = []
 
     def submit_file(
@@ -126,7 +133,7 @@ class FakeMineruClient:
 
     def download_result(self, *, url: str) -> bytes:
         assert url == self.full_zip_url
-        return build_test_mineru_zip()
+        return self.result_zip or build_test_mineru_zip()
 
 
 def build_test_mineru_zip() -> bytes:
@@ -164,6 +171,22 @@ def build_rich_test_mineru_zip() -> bytes:
                 "]}]}"
             ),
         )
+    return buffer.getvalue()
+
+
+def build_image_asset_mineru_zip() -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "layout.json",
+            (
+                '{"pages":[{"page_idx":0,"blocks":['
+                '{"type":"image","text":"系统架构图 OCR",'
+                '"asset_path":"images/architecture.png","region_index":1}'
+                "]}]}"
+            ),
+        )
+        archive.writestr("images/architecture.png", b"fake-png")
     return buffer.getvalue()
 
 
@@ -210,6 +233,91 @@ def test_mineru_zip_normalization_preserves_heading_table_and_ocr_metadata() -> 
     image_file = File(file_ext=".png")
     image_drafts = build_chunk_drafts(blocks=[blocks[6]], file=image_file)
     assert image_drafts[0].source_locator == "image:ocr-region-3"
+
+
+def test_chunk_debug_response_exposes_image_table_and_metadata_fields() -> None:
+    knowledge_base_id = uuid4()
+    file_id = uuid4()
+    parse_job_id = uuid4()
+    created_at = datetime.now(UTC)
+    file = File(id=file_id, file_name="architecture.pdf")
+    image_chunk = ChunkMetadata(
+        id=uuid4(),
+        knowledge_base_id=knowledge_base_id,
+        file_id=file_id,
+        parse_job_id=parse_job_id,
+        chunk_index=1,
+        content="系统架构图 OCR",
+        description="图片展示系统架构图。",
+        content_hash="a" * 64,
+        token_count=8,
+        source_type="pdf",
+        source_locator="pdf:p1",
+        chunk_metadata={
+            "asset_path": "images/diagram.png",
+            "document_block_types": ["image_ocr"],
+            "description_status": "generated",
+        },
+        is_active=True,
+        created_at=created_at,
+    )
+    table_chunk = ChunkMetadata(
+        id=uuid4(),
+        knowledge_base_id=knowledge_base_id,
+        file_id=file_id,
+        parse_job_id=parse_job_id,
+        chunk_index=2,
+        content="| A | B |\n| --- | --- |\n| 1 | 2 |",
+        content_hash="b" * 64,
+        token_count=12,
+        source_type="pdf",
+        source_locator="pdf:p2",
+        chunk_metadata={"document_block_types": ["table"], "split_reason": "table"},
+        is_active=True,
+        created_at=created_at,
+    )
+    text_chunk = ChunkMetadata(
+        id=uuid4(),
+        knowledge_base_id=knowledge_base_id,
+        file_id=file_id,
+        parse_job_id=parse_job_id,
+        chunk_index=3,
+        content="Plain text",
+        content_hash="c" * 64,
+        token_count=2,
+        source_type="pdf",
+        source_locator="pdf:p3",
+        chunk_metadata={},
+        is_active=True,
+        created_at=created_at,
+    )
+
+    image_response = build_chunk_response(image_chunk, file=file)
+    table_response = build_chunk_response(table_chunk, file=file)
+    text_response = build_chunk_response(text_chunk, file=file)
+
+    assert image_response.modality == "image"
+    assert image_response.description == "图片展示系统架构图。"
+    assert image_response.asset_paths == ["images/diagram.png"]
+    assert image_response.document_block_types == ["image_ocr"]
+    assert image_response.metadata["description_status"] == "generated"
+    assert image_response.image_url is not None
+    assert image_response.image_url.endswith("path=images%2Fdiagram.png")
+    assert image_response.image_urls == [image_response.image_url]
+    assert image_response.image_alt == "图片展示系统架构图。"
+
+    assert table_response.modality == "table"
+    assert table_response.image_url is None
+    assert table_response.image_urls == []
+    assert table_response.asset_paths == []
+    assert table_response.document_block_types == ["table"]
+    assert table_response.metadata["split_reason"] == "table"
+
+    assert text_response.modality == "text"
+    assert text_response.description is None
+    assert text_response.image_url is None
+    assert text_response.asset_paths == []
+    assert text_response.document_block_types == []
 
 
 class FakeEmbeddingClient:
@@ -286,6 +394,25 @@ class FakeBM25IndexClient:
         return []
 
 
+class FakeImageDescriptionClient:
+    enabled = True
+    model = "qwen3.6-flash"
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.requests: list[ImageDescriptionInput] = []
+
+    def describe_image(self, image: ImageDescriptionInput) -> str:
+        self.requests.append(image)
+        if self.fail:
+            raise ApiError(
+                code="UPSTREAM_SERVICE_ERROR",
+                message="vision unavailable",
+                status_code=502,
+            )
+        return "图片展示系统架构图，包含前端、后端和向量库之间的连接。"
+
+
 def _make_session_factory() -> sessionmaker[Session]:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -311,6 +438,7 @@ def _install_overrides(
     embedding_client: FakeEmbeddingClient | None = None,
     vector_index_client: FakeVectorIndexClient | None = None,
     bm25_index_client: FakeBM25IndexClient | None = None,
+    image_description_client: FakeImageDescriptionClient | None = None,
 ) -> None:
     bm25_index_client = bm25_index_client or FakeBM25IndexClient()
 
@@ -344,6 +472,13 @@ def _install_overrides(
             return vector_index_client
 
         app.dependency_overrides[get_vector_index_client] = override_vector_index_client
+
+    if image_description_client is not None:
+
+        def override_image_description_client() -> ImageDescriptionClientProtocol:
+            return image_description_client
+
+        app.dependency_overrides[get_image_description_client] = override_image_description_client
 
     def override_bm25_index_client() -> BM25IndexClientProtocol:
         return bm25_index_client
@@ -471,6 +606,74 @@ def test_user_cannot_upload_file() -> None:
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "FORBIDDEN"
         assert storage.objects == {}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_user_can_read_parsed_image_asset_with_auth() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id = _seed_admin_user_and_kb(session_factory)
+    storage = FakeObjectStorage()
+    with session_factory() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        assert admin is not None
+        file = File(
+            knowledge_base_id=knowledge_base_id,
+            file_name="architecture.pdf",
+            file_ext=".pdf",
+            mime_type="application/pdf",
+            file_size=1024,
+            file_hash="a" * 64,
+            storage_bucket="raw-files",
+            storage_key="architecture.pdf",
+            status=FileStatus.INDEXED.value,
+            created_by=admin.id,
+        )
+        db.add(file)
+        db.flush()
+        parse_job = ParseJob(
+            file_id=file.id,
+            knowledge_base_id=knowledge_base_id,
+            status=ParseJobStatus.INDEXED.value,
+            progress=100,
+            logs={
+                "parsed_result": {
+                    "bucket": "parsed-results",
+                    "key": "parsed/architecture.zip",
+                    "content_type": "application/zip",
+                }
+            },
+            created_by=admin.id,
+        )
+        db.add(parse_job)
+        db.flush()
+        file.latest_parse_job_id = parse_job.id
+        file_id = file.id
+        db.commit()
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("images/architecture.png", b"fake-png")
+    storage.put_object(
+        bucket="parsed-results",
+        key="parsed/architecture.zip",
+        data=buffer.getvalue(),
+        content_type="application/zip",
+        metadata={},
+    )
+    _install_overrides(session_factory, storage)
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        response = client.get(
+            f"/api/v1/files/{file_id}/assets?path=images%2Farchitecture.png",
+            headers=_headers(token),
+        )
+
+        assert response.status_code == 200
+        assert response.content == b"fake-png"
+        assert response.headers["content-type"].startswith("image/png")
     finally:
         app.dependency_overrides.clear()
 
@@ -747,6 +950,143 @@ def test_retry_parse_submits_file_to_mineru_and_status_poll_saves_result() -> No
         assert "JSON block" in contents
         json_block = next(item for item in chunks_body["items"] if item["content"] == "JSON block")
         assert json_block["source_locator"] == "txt:p2"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_image_asset_chunk_gets_description_before_indexing() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id = _seed_admin_user_and_kb(session_factory)
+    storage = FakeObjectStorage()
+    mineru_client = FakeMineruClient(
+        result_state="done",
+        result_zip=build_image_asset_mineru_zip(),
+    )
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient()
+    bm25_index_client = FakeBM25IndexClient()
+    image_description_client = FakeImageDescriptionClient()
+    _install_overrides(
+        session_factory,
+        storage,
+        mineru_client,
+        embedding_client,
+        vector_index_client,
+        bm25_index_client,
+        image_description_client,
+    )
+    try:
+        client = TestClient(app)
+        admin_token = _login(client, "admin", "AdminPassword123")
+
+        upload_response = client.post(
+            f"/api/v1/knowledge-bases/{knowledge_base_id}/files/upload",
+            headers=_headers(admin_token),
+            files=[("files", ("architecture.pdf", b"parse me", "application/pdf"))],
+        )
+        file_id = upload_response.json()["uploaded"][0]["file"]["id"]
+        status_response = client.get(
+            f"/api/v1/files/{file_id}/status",
+            headers=_headers(admin_token),
+        )
+
+        assert status_response.status_code == 200
+        assert status_response.json()["file_status"] == "indexed"
+        with session_factory() as db:
+            chunk = db.scalar(select(ChunkMetadata).where(ChunkMetadata.file_id == UUID(file_id)))
+            parse_job = db.get(ParseJob, UUID(status_response.json()["latest_parse_job"]["id"]))
+        assert chunk is not None
+        assert parse_job is not None
+        assert chunk.description == "图片展示系统架构图，包含前端、后端和向量库之间的连接。"
+        assert chunk.chunk_metadata is not None
+        assert chunk.chunk_metadata["asset_path"] == "images/architecture.png"
+        assert chunk.chunk_metadata["description_status"] == "generated"
+        assert chunk.chunk_metadata["description_model"] == "qwen3.6-flash"
+        assert image_description_client.requests[0].media_type == "image/png"
+        assert embedding_client.requests == [
+            [
+                "图片展示系统架构图，包含前端、后端和向量库之间的连接。"
+                "\n\n系统架构图 OCR\n\nimage:ocr-region-1"
+            ]
+        ]
+        assert bm25_index_client.documents[0].content == embedding_client.requests[0][0]
+        payload = cast(dict[str, Any], vector_index_client.points[0]["payload"])
+        assert payload["description"] == chunk.description
+        assert payload["asset_paths"] == ["images/architecture.png"]
+        assert payload["modality"] == "image"
+        assert parse_job.logs is not None
+        assert parse_job.logs["image_description"]["generated_count"] == 1
+
+        chunks_response = client.get(
+            f"/api/v1/files/{file_id}/chunks",
+            headers=_headers(admin_token),
+        )
+        chunk_body = chunks_response.json()["items"][0]
+        assert chunk_body["description"] == chunk.description
+        assert chunk_body["modality"] == "image"
+        assert chunk_body["asset_paths"] == ["images/architecture.png"]
+        assert chunk_body["document_block_types"] == ["image_ocr"]
+        assert chunk_body["image_url"].endswith("path=images%2Farchitecture.png")
+        assert chunk_body["image_urls"] == [chunk_body["image_url"]]
+        assert chunk_body["image_alt"] == chunk.description
+        assert chunk_body["metadata"]["description_status"] == "generated"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_image_description_failure_continues_indexing_with_warning() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id = _seed_admin_user_and_kb(session_factory)
+    storage = FakeObjectStorage()
+    mineru_client = FakeMineruClient(
+        result_state="done",
+        result_zip=build_image_asset_mineru_zip(),
+    )
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient()
+    bm25_index_client = FakeBM25IndexClient()
+    image_description_client = FakeImageDescriptionClient(fail=True)
+    _install_overrides(
+        session_factory,
+        storage,
+        mineru_client,
+        embedding_client,
+        vector_index_client,
+        bm25_index_client,
+        image_description_client,
+    )
+    try:
+        client = TestClient(app)
+        admin_token = _login(client, "admin", "AdminPassword123")
+
+        upload_response = client.post(
+            f"/api/v1/knowledge-bases/{knowledge_base_id}/files/upload",
+            headers=_headers(admin_token),
+            files=[("files", ("architecture.pdf", b"parse me", "application/pdf"))],
+        )
+        file_id = upload_response.json()["uploaded"][0]["file"]["id"]
+        status_response = client.get(
+            f"/api/v1/files/{file_id}/status",
+            headers=_headers(admin_token),
+        )
+
+        assert status_response.status_code == 200
+        assert status_response.json()["file_status"] == "indexed"
+        with session_factory() as db:
+            chunk = db.scalar(select(ChunkMetadata).where(ChunkMetadata.file_id == UUID(file_id)))
+            parse_job = db.get(ParseJob, UUID(status_response.json()["latest_parse_job"]["id"]))
+        assert chunk is not None
+        assert parse_job is not None
+        assert chunk.description is None
+        assert chunk.chunk_metadata is not None
+        assert chunk.chunk_metadata["description_status"] == "failed"
+        assert chunk.chunk_metadata["description_error"] == "vision unavailable"
+        assert embedding_client.requests == [["系统架构图 OCR\n\nimage:ocr-region-1"]]
+        assert parse_job.logs is not None
+        assert parse_job.logs["image_description"]["failed_count"] == 1
+        assert parse_job.logs["image_description"]["warnings"][0]["message"] == (
+            "vision unavailable"
+        )
     finally:
         app.dependency_overrides.clear()
 
