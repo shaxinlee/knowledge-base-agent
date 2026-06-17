@@ -32,6 +32,7 @@ class VectorIndexClientProtocol(Protocol):
         vector: list[float],
         knowledge_base_id: str,
         limit: int,
+        modality: str | None = None,
     ) -> list[VectorSearchHit]:
         pass
 
@@ -130,7 +131,17 @@ class QdrantVectorIndexClient:
         vector: list[float],
         knowledge_base_id: str,
         limit: int,
+        modality: str | None = None,
     ) -> list[VectorSearchHit]:
+        filters: list[dict[str, Any]] = [
+            {
+                "key": "knowledge_base_id",
+                "match": {"value": knowledge_base_id},
+            },
+            {"key": "is_active", "match": {"value": True}},
+        ]
+        if modality:
+            filters.append({"key": "modality", "match": {"value": modality}})
         try:
             response = httpx.post(
                 f"{self.base_url}/collections/{self.collection_name}/points/search",
@@ -138,15 +149,7 @@ class QdrantVectorIndexClient:
                     "vector": vector,
                     "limit": limit,
                     "with_payload": True,
-                    "filter": {
-                        "must": [
-                            {
-                                "key": "knowledge_base_id",
-                                "match": {"value": knowledge_base_id},
-                            },
-                            {"key": "is_active", "match": {"value": True}},
-                        ]
-                    },
+                    "filter": {"must": filters},
                 },
                 timeout=self.timeout_seconds,
             )

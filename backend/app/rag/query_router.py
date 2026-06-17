@@ -14,6 +14,7 @@ from app.services.llm import (
 )
 
 Modality = Literal["text", "table", "image", "metadata"]
+VisualResultMode = Literal["none", "single", "gallery"]
 Intent = Literal[
     "fact_qa",
     "visual_lookup",
@@ -101,6 +102,22 @@ DOC_LOOKUP_KEYWORDS = (
     "文件名",
 )
 
+VISUAL_GALLERY_KEYWORDS = (
+    "全部图",
+    "所有图",
+    "相关图",
+    "相关图片",
+    "相似图",
+    "相似图片",
+    "相似",
+    "找图",
+    "图片列表",
+    "图集",
+    "all images",
+    "similar image",
+    "similar images",
+)
+
 
 class RouteItem(BaseModel):
     modality: Modality
@@ -119,6 +136,7 @@ class RouteDecision(BaseModel):
     query: str
     intent: Intent
     search_image_vector: bool = False
+    visual_result_mode: VisualResultMode = "none"
     routes: list[RouteItem]
     answer_policy: AnswerPolicy
     confidence: float = Field(ge=0, le=1)
@@ -129,6 +147,200 @@ class RouteDecision(BaseModel):
 
 class QueryRouterProtocol(Protocol):
     def route(self, query: str) -> RouteDecision: ...
+
+
+class KnowledgeSearchDecision(BaseModel):
+    research_base: bool
+    category: str = "knowledge_base"
+    reason: str = ""
+    direct_answer: str | None = None
+
+
+class KnowledgeSearchRouterProtocol(Protocol):
+    def decide(self, query: str) -> KnowledgeSearchDecision: ...
+
+
+class RuleBasedKnowledgeSearchRouter:
+    patterns: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            "identity",
+            (
+                r"^(你|您|助手|这个助手|系统)?(是)?谁[？?。！!]*$",
+                r"^(你|您)(叫)?(什么|啥)(名字)?[？?。！!]*$",
+                r"^(介绍一下)?(你自己|自己)[？?。！!]*$",
+            ),
+        ),
+        (
+            "capability",
+            (
+                r"^(你|您)?(能|可以|会)(干什么|做什么|帮我做什么|提供什么帮助)[？?。！!]*$",
+                r"^(你|您)有什么(能力|功能)[？?。！!]*$",
+            ),
+        ),
+        (
+            "greeting",
+            (
+                r"^(你好|您好|哈喽|嗨|hi|hello|hey)[。！!？?\s]*$",
+                r"^(早上好|上午好|下午好|晚上好)[。！!？?\s]*$",
+            ),
+        ),
+        (
+            "thanks",
+            (
+                r"^(谢谢|感谢|多谢|辛苦了|thank you|thanks)[。！!？?\s]*$",
+                r"^(谢谢你|感谢你|多谢你)[。！!？?\s]*$",
+            ),
+        ),
+        (
+            "usage",
+            (
+                r"^(怎么用|如何使用|使用说明|帮助|help)[。！!？?\s]*$",
+                r"^(怎么使用|如何使用)(你|这个系统|知识库助手)[？?。！!]*$",
+            ),
+        ),
+        (
+            "handoff",
+            (
+                r"^(转人工|人工客服|联系人工|我要人工|找人工)[。！!？?\s]*$",
+                r"^(帮我)?(转接|联系)(人工|客服|人工客服)[。！!？?\s]*$",
+            ),
+        ),
+        (
+            "casual",
+            (
+                r"^(陪我聊聊天|聊聊天|讲个笑话|说个笑话)[。！!？?\s]*$",
+                r"^(你真棒|你不错|你好吗)[。！!？?\s]*$",
+            ),
+        ),
+    )
+
+    def decide(self, query: str) -> KnowledgeSearchDecision:
+        normalized_query = normalize_query_for_rule_matching(query)
+        if not normalized_query:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Query cannot be empty.",
+                status_code=422,
+            )
+        for category, patterns in self.patterns:
+            if any(re.search(pattern, normalized_query, flags=re.IGNORECASE) for pattern in patterns):
+                from app.services.assistant_profile import get_profile_answer
+
+                return KnowledgeSearchDecision(
+                    research_base=False,
+                    category=category,
+                    reason="rule_matched",
+                    direct_answer=get_profile_answer(category),
+                )
+        return KnowledgeSearchDecision(
+            research_base=True,
+            category="knowledge_base",
+            reason="rule_not_matched",
+        )
+
+
+class LLMKnowledgeSearchRouter:
+    prompt_template = """你是一个知识库问答系统的路由器。
+请判断用户问题是否需要检索知识库。
+
+如果问题是以下类型，不需要检索：
+- 询问助手身份
+- 询问助手能力
+- 寒暄
+- 感谢
+- 使用说明
+- 转人工客服
+- 明显闲聊
+
+如果问题涉及公司制度、产品文档、流程、业务知识、FAQ，则需要检索知识库。
+
+请输出布尔类型数据：
+research_base=true 或者research_base=false
+
+用户问题：{query}
+"""
+
+    def __init__(self, *, transport: httpx.BaseTransport | None = None) -> None:
+        self.transport = transport
+        self.rule_router = RuleBasedKnowledgeSearchRouter()
+
+    def build_prompt(self, query: str) -> str:
+        return self.prompt_template.format(query=query)
+
+    def decide(self, query: str) -> KnowledgeSearchDecision:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Query cannot be empty.",
+                status_code=422,
+            )
+
+        rule_decision = self.rule_router.decide(normalized_query)
+        if not rule_decision.research_base:
+            return rule_decision
+
+        settings = get_settings()
+        base_url = (
+            settings.knowledge_search_classifier_api_base_url.strip()
+            or settings.intent_recognition_api_base_url.strip()
+            or settings.llm_api_base_url.strip()
+            or settings.llm_api_base.strip()
+        )
+        api_key = (
+            settings.knowledge_search_classifier_api_key
+            or settings.intent_recognition_api_key
+            or settings.llm_api_key
+        )
+        model = settings.knowledge_search_classifier_model.strip() or "qwen3.6-flash"
+        if not base_url or not model:
+            return KnowledgeSearchDecision(
+                research_base=True,
+                category="knowledge_base",
+                reason="classifier_not_configured",
+            )
+
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是知识库检索前置分类器。你只能输出 "
+                        "research_base=true 或 research_base=false。"
+                    ),
+                },
+                {"role": "user", "content": self.build_prompt(normalized_query)},
+            ],
+            "stream": False,
+            "temperature": settings.knowledge_search_classifier_temperature,
+            "max_tokens": settings.knowledge_search_classifier_max_tokens,
+        }
+        try:
+            with httpx.Client(
+                timeout=settings.knowledge_search_classifier_timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = client.post(
+                    build_chat_completions_url(base_url),
+                    headers=build_llm_headers(api_key),
+                    json=payload,
+                )
+                response.raise_for_status()
+            research_base = parse_research_base_output(
+                parse_chat_completion_content(response.json())
+            )
+            return KnowledgeSearchDecision(
+                research_base=research_base,
+                category="knowledge_base" if research_base else "llm_direct",
+                reason="classifier",
+            )
+        except (httpx.HTTPError, ValueError, ApiError):
+            return KnowledgeSearchDecision(
+                research_base=True,
+                category="knowledge_base",
+                reason="classifier_failed",
+            )
 
 
 class RuleBasedQueryRouter:
@@ -145,6 +357,7 @@ class RuleBasedQueryRouter:
         visual_hit = contains_any(normalized_query, VISUAL_KEYWORDS)
         multimodal_hit = visual_hit and contains_any(normalized_query, MULTIMODAL_KEYWORDS)
         doc_lookup_hit = contains_any(normalized_query, DOC_LOOKUP_KEYWORDS)
+        gallery_hit = contains_any(normalized_query, VISUAL_GALLERY_KEYWORDS)
 
         enabled: dict[Modality, bool] = {
             "text": True,
@@ -181,6 +394,7 @@ class RuleBasedQueryRouter:
             enabled["table"] = False
             enabled["image"] = True
             weights["image"] = 1.4
+            top_k["image"] = 20
             must_return_visual = True
             confidence = 0.82
 
@@ -213,6 +427,7 @@ class RuleBasedQueryRouter:
             query=normalized_query,
             intent=intent,
             search_image_vector=must_return_visual,
+            visual_result_mode="gallery" if gallery_hit else "single" if must_return_visual else "none",
             routes=routes,
             answer_policy=AnswerPolicy(must_return_visual=must_return_visual),
             confidence=confidence,
@@ -231,6 +446,7 @@ class LLMQueryRouter:
 规则：
 - 如果用户明确提到图、图片、截图、架构图、流程图、曲线图、柱状图、界面、UI，则 image=true。
 - 只有用户明确想查看图片、截图、图表、架构图、流程图、页面图等视觉内容时，search_image_vector=true。
+- 如果用户要求全部图、相关图片、相似图片、找图集，visual_result_mode=gallery；如果只是解释某张图，visual_result_mode=single。
 - 普通事实问答、总结、解释、查日期/金额/负责人/状态时，search_image_vector=false，即使相关文档里可能包含图片。
 - 如果用户询问日期、金额、数量、状态、负责人、版本、清单、列表，应 table=true，同时 text=true。
 - 如果用户询问条款、定义、说明、原因、流程、政策，应 text=true。
@@ -256,6 +472,7 @@ class LLMQueryRouter:
                     "doc_lookup | summarization | comparison | unknown"
                 ),
                 "search_image_vector": False,
+                "visual_result_mode": "none | single | gallery",
                 "routes": [
                     {"modality": "text", "enabled": True, "weight": 1.0, "top_k": 30},
                     {"modality": "table", "enabled": True, "weight": 1.0, "top_k": 30},
@@ -283,8 +500,13 @@ class LLMQueryRouter:
             )
 
         settings = get_settings()
-        base_url = settings.llm_api_base_url.strip() or settings.llm_api_base.strip()
-        model = settings.llm_model.strip()
+        base_url = (
+            settings.intent_recognition_api_base_url.strip()
+            or settings.llm_api_base_url.strip()
+            or settings.llm_api_base.strip()
+        )
+        api_key = settings.intent_recognition_api_key or settings.llm_api_key
+        model = settings.intent_recognition_model.strip() or settings.llm_model.strip()
         if not base_url or not model:
             return RuleBasedQueryRouter().route(normalized_query)
 
@@ -298,12 +520,21 @@ class LLMQueryRouter:
             },
             {"role": "user", "content": self.build_prompt(normalized_query)},
         ]
-        payload = {"model": model, "messages": messages, "stream": False}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "temperature": settings.intent_recognition_temperature,
+            "max_tokens": settings.intent_recognition_max_tokens,
+        }
         try:
-            with httpx.Client(timeout=30, transport=self.transport) as client:
+            with httpx.Client(
+                timeout=settings.intent_recognition_timeout_seconds,
+                transport=self.transport,
+            ) as client:
                 response = client.post(
                     build_chat_completions_url(base_url),
-                    headers=build_llm_headers(settings.llm_api_key),
+                    headers=build_llm_headers(api_key),
                     json=payload,
                 )
                 response.raise_for_status()
@@ -338,6 +569,31 @@ def extract_json_object(content: str) -> Any:
 
 def get_query_router() -> QueryRouterProtocol:
     return LLMQueryRouter()
+
+
+def get_knowledge_search_router() -> KnowledgeSearchRouterProtocol:
+    return LLMKnowledgeSearchRouter()
+
+
+def normalize_query_for_rule_matching(query: str) -> str:
+    return re.sub(r"\s+", "", query.strip().lower())
+
+
+def parse_research_base_output(content: str) -> bool:
+    normalized = content.strip().lower()
+    normalized = re.sub(r"^```(?:text)?\s*", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s*```$", "", normalized)
+    true_match = re.search(r"research_base\s*=\s*true", normalized)
+    false_match = re.search(r"research_base\s*=\s*false", normalized)
+    if true_match and not false_match:
+        return True
+    if false_match and not true_match:
+        return False
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError("Classifier output must contain research_base=true or research_base=false.")
 
 
 def route_enabled(routes: list[RouteItem], modality: Modality) -> bool:
@@ -383,9 +639,17 @@ def normalize_route_decision(decision: RouteDecision) -> RouteDecision:
     answer_policy = decision.answer_policy.model_copy(
         update={"must_return_visual": search_image_vector}
     )
+    visual_result_mode = decision.visual_result_mode
+    if search_image_vector and visual_result_mode == "none":
+        visual_result_mode = (
+            "gallery" if contains_any(decision.query, VISUAL_GALLERY_KEYWORDS) else "single"
+        )
+    if not search_image_vector:
+        visual_result_mode = "none"
     return decision.model_copy(
         update={
             "search_image_vector": search_image_vector,
+            "visual_result_mode": visual_result_mode,
             "routes": normalized_routes,
             "answer_policy": answer_policy,
         }

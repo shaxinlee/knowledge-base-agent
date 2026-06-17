@@ -8,6 +8,19 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ConsumerSessionRequest(BaseModel):
+    username: str | None = None
+
+
+class ConsumerUserOption(BaseModel):
+    username: str
+    display_name: str
+
+
+class ConsumerUserOptionsResponse(BaseModel):
+    items: list[ConsumerUserOption]
+
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 

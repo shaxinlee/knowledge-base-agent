@@ -67,6 +67,19 @@ export interface LoginRequest {
   password: string
 }
 
+export interface ConsumerSessionRequest {
+  username: string
+}
+
+export interface ConsumerUserOption {
+  username: string
+  display_name: string
+}
+
+export interface ConsumerUserOptionsResponse {
+  items: ConsumerUserOption[]
+}
+
 export interface TokenResponse {
   access_token: string
   refresh_token: string
@@ -106,6 +119,17 @@ export interface ResetPasswordRequest {
 export interface ResetPasswordResponse {
   user_id: string
   reset_at: string
+}
+
+export interface AssistantProfile {
+  name: string
+  identity_answer: string
+  capability_answer: string
+  greeting_answer: string
+  thanks_answer: string
+  usage_answer: string
+  handoff_answer: string
+  fallback_casual_answer: string
 }
 
 export interface KnowledgeBase {
@@ -265,6 +289,22 @@ export interface Citation {
   image_alt: string | null
 }
 
+export interface MessageAttachmentInput {
+  type: 'image'
+  file_name: string
+  media_type: string
+  data_url: string
+}
+
+export interface MessageAttachment {
+  id: string
+  type: 'image' | string
+  file_name: string
+  media_type: string
+  size_bytes: number
+  url: string
+}
+
 export interface Message {
   id: string
   conversation_id: string
@@ -272,7 +312,9 @@ export interface Message {
   content: string
   created_at: string
   citations: Citation[]
+  attachments: MessageAttachment[]
   feedback_rating: FeedbackRating | null
+  visual_result_mode: 'none' | 'single' | 'gallery' | null
 }
 
 export interface ConversationDetail extends Conversation {
@@ -282,6 +324,7 @@ export interface ConversationDetail extends Conversation {
 export interface MessageCreateRequest {
   content: string
   stream?: boolean
+  attachments?: MessageAttachmentInput[]
 }
 
 export interface MessageCreateResponse {
@@ -308,6 +351,7 @@ export interface SseDoneEvent {
   message_id: string
   answer: string
   citations: Citation[]
+  visual_result_mode?: 'none' | 'single' | 'gallery' | null
 }
 
 export interface SseErrorEvent {

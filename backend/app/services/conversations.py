@@ -1,8 +1,12 @@
+import base64
+import binascii
+import hashlib
+import re
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -17,12 +21,18 @@ from app.models import (
     File,
     FileStatus,
     Message,
+    MessageAttachment,
     MessageCitation,
     MessageRole,
     MessageTrace,
     User,
 )
-from app.rag.query_router import QueryRouterProtocol, RouteDecision
+from app.rag.query_router import (
+    KnowledgeSearchDecision,
+    KnowledgeSearchRouterProtocol,
+    QueryRouterProtocol,
+    RouteDecision,
+)
 from app.schemas.conversations import (
     CitationResponse,
     ConversationCreateRequest,
@@ -32,13 +42,17 @@ from app.schemas.conversations import (
     MessageCreateRequest,
     MessageCreateResponse,
     MessageResponse,
+    MessageAttachmentInput,
+    MessageAttachmentResponse,
 )
 from app.schemas.retrieval import RetrievalResultItem, RetrievalSearchRequest
 from app.services.bm25_index import BM25IndexClientProtocol
 from app.services.chunk_text import build_display_chunk_text
 from app.services.content_normalization import normalize_special_elements
 from app.services.embedding import EmbeddingClientProtocol
-from app.services.llm import LLMClientProtocol, build_refusal_answer
+from app.services.image_descriptions import ImageDescriptionClientProtocol, ImageDescriptionInput
+from app.services.llm import DIRECT_PROMPT_VERSION, LLMClientProtocol, build_refusal_answer
+from app.services.object_storage import ObjectStorage
 from app.services.reranker import RerankerClientProtocol
 from app.services.retrieval import require_active_knowledge_base, search_knowledge_base
 from app.services.vector_index import VectorIndexClientProtocol
@@ -55,10 +69,24 @@ from app.services.visual_citations import (
 class MessageContext:
     conversation: Conversation
     user_message: Message
+    user_attachments: list[MessageAttachment]
     query_text: str
-    route_decision: RouteDecision
+    query_image_vector: list[float] | None
+    knowledge_search_decision: KnowledgeSearchDecision
+    route_decision: RouteDecision | None
     retrieval_items: list[RetrievalResultItem]
     final_context_items: list[RetrievalResultItem]
+
+
+@dataclass(frozen=True)
+class DecodedMessageAttachment:
+    input: MessageAttachmentInput
+    data: bytes
+
+
+DEFAULT_IMAGE_QUERY_TEXT = "请分析这张图片并检索相关知识库内容"
+ALLOWED_MESSAGE_IMAGE_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+DATA_URL_PATTERN = re.compile(r"^data:(?P<media_type>[-\w.]+/[-\w.+]+);base64,(?P<data>.+)$", re.S)
 
 
 def list_conversations(
@@ -124,6 +152,7 @@ def get_conversation_detail(
         .order_by(Message.created_at)
     ).all()
     citations = load_citations_for_messages(db, [message.id for message in messages])
+    attachments = load_attachments_for_messages(db, [message.id for message in messages])
     feedback_ratings = load_feedback_ratings_for_messages(
         db,
         message_ids=[message.id for message in messages],
@@ -135,7 +164,9 @@ def get_conversation_detail(
             build_message_response(
                 message,
                 citations.get(message.id, []),
+                attachments=attachments.get(message.id, []),
                 feedback_rating=feedback_ratings.get(message.id),
+                visual_result_mode=infer_message_visual_result_mode(citations.get(message.id, [])),
             )
             for message in messages
         ],
@@ -167,20 +198,42 @@ def create_message(
     llm_client: LLMClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    storage: ObjectStorage,
+    image_description_client: ImageDescriptionClientProtocol,
+    knowledge_search_router: KnowledgeSearchRouterProtocol,
     query_router: QueryRouterProtocol,
 ) -> MessageCreateResponse:
     message_context = prepare_message_context(
         db,
         conversation_id=conversation_id,
-        content=payload.content,
+        payload=payload,
         current_user=current_user,
         embedding_client=embedding_client,
         reranker_client=reranker_client,
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
+        storage=storage,
+        image_description_client=image_description_client,
+        knowledge_search_router=knowledge_search_router,
         query_router=query_router,
     )
-    if message_context.final_context_items:
+    if not message_context.knowledge_search_decision.research_base:
+        if message_context.knowledge_search_decision.direct_answer:
+            assistant_content = sanitize_visible_text(
+                message_context.knowledge_search_decision.direct_answer
+            )
+            chat_model = llm_client.model
+            prompt_version = "assistant-profile-v1"
+            raw_prompt_snapshot = None
+            token_usage = {}
+        else:
+            llm_answer = llm_client.generate_direct_answer(query=message_context.query_text)
+            assistant_content = sanitize_visible_text(llm_answer.content)
+            chat_model = llm_answer.model
+            prompt_version = llm_answer.prompt_version
+            raw_prompt_snapshot = llm_answer.raw_prompt_snapshot
+            token_usage = llm_answer.token_usage
+    elif message_context.final_context_items:
         llm_answer = llm_client.generate_answer(
             query=message_context.query_text,
             contexts=message_context.final_context_items,
@@ -205,7 +258,9 @@ def create_message(
         model_name=chat_model,
         prompt_version=prompt_version,
         final_context_items=message_context.final_context_items,
-        allow_images=message_context.route_decision.search_image_vector,
+        allow_images=bool(
+            message_context.route_decision and message_context.route_decision.search_image_vector
+        ),
     )
     save_message_trace(
         db,
@@ -228,17 +283,27 @@ def create_message(
         db.refresh(citation)
 
     return MessageCreateResponse(
-        user_message=build_message_response(message_context.user_message, []),
+        user_message=build_message_response(
+            message_context.user_message,
+            [],
+            attachments=build_attachment_responses(message_context.user_attachments),
+        ),
         assistant_message=build_message_response(
             assistant_message,
             [
                 build_citation_response(
                     citation,
                     context_item=message_context.final_context_items[index],
-                    allow_images=message_context.route_decision.search_image_vector,
+                    allow_images=bool(
+                        message_context.route_decision
+                        and message_context.route_decision.search_image_vector
+                    ),
                 )
                 for index, citation in enumerate(citation_rows)
             ],
+            visual_result_mode=message_context.route_decision.visual_result_mode
+            if message_context.route_decision
+            else None,
         ),
     )
 
@@ -254,14 +319,14 @@ def stream_create_message_events(
     llm_client: LLMClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    storage: ObjectStorage,
+    image_description_client: ImageDescriptionClientProtocol,
+    knowledge_search_router: KnowledgeSearchRouterProtocol,
     query_router: QueryRouterProtocol,
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:
     conversation = require_user_conversation(db, conversation_id, current_user)
-    query_text = payload.content.strip()
-    if not query_text:
-        raise ApiError(
-            code="VALIDATION_ERROR", message="Message content cannot be empty.", status_code=422
-        )
+    decoded_attachments = decode_message_attachments(payload.attachments)
+    query_text = normalize_message_query(payload.content, decoded_attachments)
 
     user_message = Message(
         conversation_id=conversation.id,
@@ -281,33 +346,108 @@ def stream_create_message_events(
     )
     db.add(user_message)
     db.add(assistant_message)
+    db.flush()
+    user_attachments = save_message_attachments(
+        db,
+        message=user_message,
+        attachments=decoded_attachments,
+        storage=storage,
+    )
     conversation.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)
+    for attachment in user_attachments:
+        db.refresh(attachment)
 
     yield (
         "message_created",
         {
-            "user_message": build_message_response(user_message, []).model_dump(mode="json"),
+            "user_message": build_message_response(
+                user_message,
+                [],
+                attachments=build_attachment_responses(user_attachments),
+            ).model_dump(mode="json"),
             "assistant_message": build_message_response(assistant_message, []).model_dump(
                 mode="json"
             ),
         },
     )
 
-    route_decision = query_router.route(query_text)
+    query_image_vector, augmented_query_text = build_multimodal_query_inputs(
+        query_text=query_text,
+        attachments=decoded_attachments,
+        embedding_client=embedding_client,
+        image_description_client=image_description_client,
+    )
+
+    knowledge_search_decision = knowledge_search_router.decide(augmented_query_text)
+    if not knowledge_search_decision.research_base:
+        yield (
+            "retrieval",
+            {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
+        )
+        assistant_content = ""
+        if knowledge_search_decision.direct_answer:
+            token_source = split_stream_text(knowledge_search_decision.direct_answer)
+            prompt_version = "assistant-profile-v1"
+        else:
+            token_source = llm_client.stream_direct_answer(query=augmented_query_text)
+            prompt_version = DIRECT_PROMPT_VERSION
+        for token in token_source:
+            safe_token = sanitize_visible_text(token)
+            assistant_content += safe_token
+            if safe_token:
+                yield ("token", {"text": safe_token})
+
+        assistant_content = sanitize_visible_text(assistant_content)
+        assistant_message.content = assistant_content
+        assistant_message.status = "completed"
+        assistant_message.model_name = llm_client.model
+        assistant_message.prompt_version = prompt_version
+        save_message_trace(
+            db,
+            assistant_message=assistant_message,
+            query_text=augmented_query_text,
+            retrieval_items=[],
+            final_context_items=[],
+            embedding_model=embedding_client.model,
+            reranker_model=reranker_client.model,
+            chat_model=llm_client.model,
+            prompt_version=prompt_version,
+            token_usage={},
+            raw_prompt_snapshot=None,
+        )
+        conversation.updated_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(assistant_message)
+        yield (
+            "done",
+            {
+                "message_id": str(assistant_message.id),
+                "answer": assistant_content,
+                "citations": [],
+                "visual_result_mode": None,
+            },
+        )
+        return
+
+    route_decision = query_router.route(augmented_query_text)
     retrieval_response = search_knowledge_base(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
-        payload=build_routed_retrieval_request(query=query_text, route_decision=route_decision),
+        payload=build_routed_retrieval_request(
+            query=augmented_query_text,
+            route_decision=route_decision,
+            query_image_vector=query_image_vector,
+        ),
         embedding_client=embedding_client,
         reranker_client=reranker_client,
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
     )
     routed_items = apply_route_preferences(retrieval_response.items, route_decision=route_decision)
-    gated_context_items = apply_evidence_gate(routed_items)
+    gated_context_items = apply_evidence_gate(routed_items, route_decision=route_decision)
     final_context_items = expand_context_to_section_chunks(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
@@ -329,7 +469,10 @@ def stream_create_message_events(
 
     assistant_content = ""
     if final_context_items:
-        for token in llm_client.stream_answer(query=query_text, contexts=final_context_items):
+        for token in llm_client.stream_answer(
+            query=augmented_query_text,
+            contexts=final_context_items,
+        ):
             safe_token = sanitize_visible_text(token)
             assistant_content += safe_token
             if safe_token:
@@ -395,6 +538,7 @@ def stream_create_message_events(
                 ).model_dump(mode="json")
                 for index, citation in enumerate(citation_rows)
             ],
+            "visual_result_mode": route_decision.visual_result_mode,
         },
     )
 
@@ -403,20 +547,20 @@ def prepare_message_context(
     db: Session,
     *,
     conversation_id: UUID,
-    content: str,
+    payload: MessageCreateRequest,
     current_user: User,
     embedding_client: EmbeddingClientProtocol,
     reranker_client: RerankerClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    storage: ObjectStorage,
+    image_description_client: ImageDescriptionClientProtocol,
+    knowledge_search_router: KnowledgeSearchRouterProtocol,
     query_router: QueryRouterProtocol,
 ) -> MessageContext:
     conversation = require_user_conversation(db, conversation_id, current_user)
-    query_text = content.strip()
-    if not query_text:
-        raise ApiError(
-            code="VALIDATION_ERROR", message="Message content cannot be empty.", status_code=422
-        )
+    decoded_attachments = decode_message_attachments(payload.attachments)
+    query_text = normalize_message_query(payload.content, decoded_attachments)
 
     user_message = Message(
         conversation_id=conversation.id,
@@ -427,19 +571,50 @@ def prepare_message_context(
     )
     db.add(user_message)
     db.flush()
+    user_attachments = save_message_attachments(
+        db,
+        message=user_message,
+        attachments=decoded_attachments,
+        storage=storage,
+    )
 
-    route_decision = query_router.route(query_text)
+    query_image_vector, augmented_query_text = build_multimodal_query_inputs(
+        query_text=query_text,
+        attachments=decoded_attachments,
+        embedding_client=embedding_client,
+        image_description_client=image_description_client,
+    )
+
+    knowledge_search_decision = knowledge_search_router.decide(augmented_query_text)
+    if not knowledge_search_decision.research_base:
+        return MessageContext(
+            conversation=conversation,
+            user_message=user_message,
+            user_attachments=user_attachments,
+            query_text=augmented_query_text,
+            query_image_vector=query_image_vector,
+            knowledge_search_decision=knowledge_search_decision,
+            route_decision=None,
+            retrieval_items=[],
+            final_context_items=[],
+        )
+
+    route_decision = query_router.route(augmented_query_text)
     retrieval_response = search_knowledge_base(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
-        payload=build_routed_retrieval_request(query=query_text, route_decision=route_decision),
+        payload=build_routed_retrieval_request(
+            query=augmented_query_text,
+            route_decision=route_decision,
+            query_image_vector=query_image_vector,
+        ),
         embedding_client=embedding_client,
         reranker_client=reranker_client,
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
     )
     routed_items = apply_route_preferences(retrieval_response.items, route_decision=route_decision)
-    gated_context_items = apply_evidence_gate(routed_items)
+    gated_context_items = apply_evidence_gate(routed_items, route_decision=route_decision)
     final_context_items = expand_context_to_section_chunks(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
@@ -452,7 +627,10 @@ def prepare_message_context(
     return MessageContext(
         conversation=conversation,
         user_message=user_message,
-        query_text=query_text,
+        user_attachments=user_attachments,
+        query_text=augmented_query_text,
+        query_image_vector=query_image_vector,
+        knowledge_search_decision=knowledge_search_decision,
         route_decision=route_decision,
         retrieval_items=list(retrieval_response.items),
         final_context_items=final_context_items,
@@ -533,6 +711,170 @@ def save_message_trace(
     )
 
 
+def decode_message_attachments(
+    attachments: Sequence[MessageAttachmentInput],
+) -> list[DecodedMessageAttachment]:
+    if len(attachments) > 1:
+        raise ApiError(
+            code="VALIDATION_ERROR",
+            message="Only one image attachment is supported per message.",
+            status_code=422,
+        )
+    decoded: list[DecodedMessageAttachment] = []
+    for attachment in attachments:
+        if attachment.type != "image":
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Only image attachments are supported.",
+                status_code=422,
+            )
+        match = DATA_URL_PATTERN.match(attachment.data_url)
+        if match is None:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Image attachment must be a base64 data URL.",
+                status_code=422,
+            )
+        media_type = match.group("media_type").lower()
+        if media_type not in ALLOWED_MESSAGE_IMAGE_MEDIA_TYPES:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Unsupported image attachment type.",
+                status_code=422,
+                details={"media_type": media_type},
+            )
+        if attachment.media_type.lower() != media_type:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Image attachment media type does not match data URL.",
+                status_code=422,
+            )
+        try:
+            data = base64.b64decode(match.group("data"), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Image attachment data is not valid base64.",
+                status_code=422,
+            ) from exc
+        max_size = get_settings().max_message_attachment_size_mb * 1024 * 1024
+        if len(data) > max_size:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Image attachment is too large.",
+                status_code=422,
+                details={"max_size_bytes": max_size},
+            )
+        decoded.append(DecodedMessageAttachment(input=attachment, data=data))
+    return decoded
+
+
+def normalize_message_query(
+    content: str,
+    attachments: Sequence[DecodedMessageAttachment],
+) -> str:
+    query_text = content.strip()
+    if query_text:
+        return query_text
+    if attachments:
+        return DEFAULT_IMAGE_QUERY_TEXT
+    raise ApiError(
+        code="VALIDATION_ERROR",
+        message="Message content or image attachment is required.",
+        status_code=422,
+    )
+
+
+def save_message_attachments(
+    db: Session,
+    *,
+    message: Message,
+    attachments: Sequence[DecodedMessageAttachment],
+    storage: ObjectStorage,
+) -> list[MessageAttachment]:
+    saved: list[MessageAttachment] = []
+    settings = get_settings()
+    for attachment in attachments:
+        digest = hashlib.sha256(attachment.data).hexdigest()
+        key = f"messages/{message.conversation_id}/{message.id}/{uuid4()}-{digest[:16]}"
+        storage.put_object(
+            bucket=settings.message_attachments_bucket,
+            key=key,
+            data=attachment.data,
+            content_type=attachment.input.media_type,
+            metadata={"message_id": str(message.id)},
+        )
+        row = MessageAttachment(
+            message_id=message.id,
+            attachment_type=attachment.input.type,
+            file_name=attachment.input.file_name,
+            media_type=attachment.input.media_type,
+            size_bytes=len(attachment.data),
+            storage_bucket=settings.message_attachments_bucket,
+            storage_key=key,
+        )
+        db.add(row)
+        saved.append(row)
+    return saved
+
+
+def build_multimodal_query_inputs(
+    *,
+    query_text: str,
+    attachments: Sequence[DecodedMessageAttachment],
+    embedding_client: EmbeddingClientProtocol,
+    image_description_client: ImageDescriptionClientProtocol,
+) -> tuple[list[float] | None, str]:
+    if not attachments:
+        return None, query_text
+    attachment = attachments[0]
+    routed_query_text = f"{query_text}\n\n用户上传图片：作为视觉检索条件。"
+    image_vector = try_embed_query_image(embedding_client, attachment.input.data_url)
+    if image_vector is not None:
+        return image_vector, routed_query_text
+    description = try_describe_query_image(
+        image_description_client=image_description_client,
+        attachment=attachment,
+        query_text=query_text,
+    )
+    if not description:
+        return None, routed_query_text
+    return None, f"{routed_query_text}\n\n用户上传图片描述：{description}"
+
+
+def try_embed_query_image(
+    embedding_client: EmbeddingClientProtocol,
+    data_url: str,
+) -> list[float] | None:
+    try:
+        vectors = embedding_client.embed_images([data_url])
+    except (ApiError, AttributeError):
+        return None
+    return vectors[0] if vectors else None
+
+
+def try_describe_query_image(
+    *,
+    image_description_client: ImageDescriptionClientProtocol,
+    attachment: DecodedMessageAttachment,
+    query_text: str,
+) -> str:
+    if not image_description_client.enabled:
+        return ""
+    try:
+        return image_description_client.describe_image(
+            ImageDescriptionInput(
+                image_bytes=attachment.data,
+                media_type=attachment.input.media_type,
+                context_text=query_text,
+                source_locator="user-message-attachment",
+                file_name=attachment.input.file_name,
+            )
+        )
+    except ApiError:
+        return ""
+
+
 def split_stream_text(content: str) -> Generator[str, None, None]:
     chunk_size = 16
     for index in range(0, len(content), chunk_size):
@@ -547,12 +889,16 @@ def build_routed_retrieval_request(
     *,
     query: str,
     route_decision: RouteDecision,
+    query_image_vector: list[float] | None = None,
 ) -> RetrievalSearchRequest:
     enabled_routes = [route for route in route_decision.routes if route.enabled]
     max_route_top_k = max((route.top_k for route in enabled_routes), default=30)
-    final_top_k = 10 if route_decision.answer_policy.must_return_visual else 8
+    final_top_k = 12 if route_decision.visual_result_mode == "gallery" else (
+        10 if route_decision.answer_policy.must_return_visual else 8
+    )
     return RetrievalSearchRequest(
         query=query,
+        query_image_vector=query_image_vector,
         vector_top_k=min(max(max_route_top_k, 30), 100),
         full_text_top_k=min(max(max_route_top_k, 30), 100),
         top_k=final_top_k,
@@ -570,8 +916,13 @@ def apply_route_preferences(
     return sorted(contexts, key=lambda item: item.modality != "image")
 
 
-def apply_evidence_gate(items: Sequence[RetrievalResultItem]) -> list[RetrievalResultItem]:
-    contexts = list(items[:6])
+def apply_evidence_gate(
+    items: Sequence[RetrievalResultItem],
+    *,
+    route_decision: RouteDecision,
+) -> list[RetrievalResultItem]:
+    limit = 12 if route_decision.visual_result_mode == "gallery" else 6
+    contexts = list(items[:limit])
     if not contexts:
         return []
     threshold = get_settings().evidence_min_reranker_score
@@ -790,6 +1141,76 @@ def load_citations_for_messages(
     return citations
 
 
+def load_attachments_for_messages(
+    db: Session,
+    message_ids: list[UUID],
+) -> dict[UUID, list[MessageAttachmentResponse]]:
+    if not message_ids:
+        return {}
+    rows = db.scalars(
+        select(MessageAttachment)
+        .where(MessageAttachment.message_id.in_(message_ids))
+        .order_by(MessageAttachment.created_at)
+    ).all()
+    attachments: dict[UUID, list[MessageAttachmentResponse]] = {}
+    for attachment in rows:
+        attachments.setdefault(attachment.message_id, []).append(
+            build_attachment_response(attachment)
+        )
+    return attachments
+
+
+def build_attachment_responses(
+    attachments: Sequence[MessageAttachment],
+) -> list[MessageAttachmentResponse]:
+    return [build_attachment_response(attachment) for attachment in attachments]
+
+
+def build_attachment_response(attachment: MessageAttachment) -> MessageAttachmentResponse:
+    return MessageAttachmentResponse(
+        id=str(attachment.id),
+        type=attachment.attachment_type,
+        file_name=attachment.file_name,
+        media_type=attachment.media_type,
+        size_bytes=attachment.size_bytes,
+        url=f"/api/v1/messages/{attachment.message_id}/attachments/{attachment.id}",
+    )
+
+
+def infer_message_visual_result_mode(citations: Sequence[CitationResponse]) -> str | None:
+    image_count = sum(1 for citation in citations if citation.modality == "image")
+    if image_count > 1:
+        return "gallery"
+    if image_count == 1:
+        return "single"
+    return None
+
+
+def get_message_attachment_asset(
+    db: Session,
+    *,
+    message_id: UUID,
+    attachment_id: UUID,
+    current_user: User,
+    storage: ObjectStorage,
+) -> tuple[bytes, str]:
+    row = db.execute(
+        select(MessageAttachment, Message, Conversation)
+        .join(Message, Message.id == MessageAttachment.message_id)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .where(MessageAttachment.id == attachment_id, MessageAttachment.message_id == message_id)
+    ).one_or_none()
+    if row is None:
+        raise ApiError(code="RESOURCE_NOT_FOUND", message="Attachment was not found.", status_code=404)
+    attachment, _message, conversation = row
+    if conversation.user_id != current_user.id or conversation.deleted_at is not None:
+        raise ApiError(code="RESOURCE_NOT_FOUND", message="Attachment was not found.", status_code=404)
+    return (
+        storage.get_object(bucket=attachment.storage_bucket, key=attachment.storage_key),
+        attachment.media_type,
+    )
+
+
 def load_feedback_ratings_for_messages(
     db: Session,
     *,
@@ -821,7 +1242,9 @@ def build_message_response(
     message: Message,
     citations: list[CitationResponse],
     *,
+    attachments: list[MessageAttachmentResponse] | None = None,
     feedback_rating: str | None = None,
+    visual_result_mode: str | None = None,
 ) -> MessageResponse:
     return MessageResponse(
         id=str(message.id),
@@ -830,7 +1253,9 @@ def build_message_response(
         content=message.content,
         created_at=message.created_at,
         citations=citations,
+        attachments=attachments or [],
         feedback_rating=feedback_rating,
+        visual_result_mode=visual_result_mode,
     )
 
 

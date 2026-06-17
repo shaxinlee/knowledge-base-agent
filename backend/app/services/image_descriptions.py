@@ -67,12 +67,16 @@ class OpenAIVisionImageDescriptionClient:
         api_key: str,
         model: str,
         timeout_seconds: int = 120,
+        temperature: float = 0.2,
+        max_tokens: int = 800,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.temperature = temperature
+        self.max_tokens = max_tokens
         self.transport = transport
 
     def describe_image(self, image: ImageDescriptionInput) -> str:
@@ -99,6 +103,8 @@ class OpenAIVisionImageDescriptionClient:
                 }
             ],
             "stream": False,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
         }
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
@@ -348,4 +354,6 @@ def get_image_description_client() -> ImageDescriptionClientProtocol:
         api_key=api_key,
         model=settings.image_description_model,
         timeout_seconds=settings.image_description_timeout_seconds,
+        temperature=settings.image_description_temperature,
+        max_tokens=settings.image_description_max_tokens,
     )

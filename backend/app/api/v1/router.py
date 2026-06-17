@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.assistant_profile import router as assistant_profile_router
 from app.api.v1.audit_logs import router as audit_logs_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.conversations import router as conversations_router
@@ -11,6 +12,7 @@ from app.api.v1.retrieval import router as retrieval_router
 from app.api.v1.users import router as users_router
 
 api_router = APIRouter()
+api_router.include_router(assistant_profile_router)
 api_router.include_router(audit_logs_router)
 api_router.include_router(auth_router)
 api_router.include_router(conversations_router)

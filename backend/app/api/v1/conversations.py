@@ -4,13 +4,18 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models import User
-from app.rag.query_router import QueryRouterProtocol, get_query_router
+from app.rag.query_router import (
+    KnowledgeSearchRouterProtocol,
+    QueryRouterProtocol,
+    get_knowledge_search_router,
+    get_query_router,
+)
 from app.schemas.conversations import (
     ConversationCreateRequest,
     ConversationDetailResponse,
@@ -24,12 +29,18 @@ from app.services.conversations import (
     create_conversation,
     create_message,
     delete_conversation,
+    get_message_attachment_asset,
     get_conversation_detail,
     list_conversations,
     stream_create_message_events,
 )
 from app.services.embedding import EmbeddingClientProtocol, get_embedding_client
+from app.services.image_descriptions import (
+    ImageDescriptionClientProtocol,
+    get_image_description_client,
+)
 from app.services.llm import LLMClientProtocol, get_llm_client
+from app.services.object_storage import ObjectStorage, get_object_storage
 from app.services.reranker import RerankerClientProtocol, get_reranker_client
 from app.services.vector_index import VectorIndexClientProtocol, get_vector_index_client
 
@@ -39,6 +50,9 @@ __all__ = [
     "get_embedding_client",
     "get_bm25_index_client",
     "get_llm_client",
+    "get_image_description_client",
+    "get_knowledge_search_router",
+    "get_object_storage",
     "get_query_router",
     "get_reranker_client",
     "get_vector_index_client",
@@ -101,6 +115,11 @@ def create_conversation_message_endpoint(
     llm_client: LLMClientProtocol = Depends(get_llm_client),
     vector_index_client: VectorIndexClientProtocol = Depends(get_vector_index_client),
     bm25_index_client: BM25IndexClientProtocol = Depends(get_bm25_index_client),
+    storage: ObjectStorage = Depends(get_object_storage),
+    image_description_client: ImageDescriptionClientProtocol = Depends(
+        get_image_description_client
+    ),
+    knowledge_search_router: KnowledgeSearchRouterProtocol = Depends(get_knowledge_search_router),
     query_router: QueryRouterProtocol = Depends(get_query_router),
 ) -> MessageCreateResponse | StreamingResponse:
     if payload.stream:
@@ -116,6 +135,9 @@ def create_conversation_message_endpoint(
                     llm_client=llm_client,
                     vector_index_client=vector_index_client,
                     bm25_index_client=bm25_index_client,
+                    storage=storage,
+                    image_description_client=image_description_client,
+                    knowledge_search_router=knowledge_search_router,
                     query_router=query_router,
                 )
             ),
@@ -132,9 +154,30 @@ def create_conversation_message_endpoint(
         llm_client=llm_client,
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
+        storage=storage,
+        image_description_client=image_description_client,
+        knowledge_search_router=knowledge_search_router,
         query_router=query_router,
     )
     return response
+
+
+@router.get("/messages/{message_id}/attachments/{attachment_id}", response_model=None)
+def read_message_attachment(
+    message_id: UUID,
+    attachment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> Response:
+    content, media_type = get_message_attachment_asset(
+        db,
+        message_id=message_id,
+        attachment_id=attachment_id,
+        current_user=current_user,
+        storage=storage,
+    )
+    return Response(content=content, media_type=media_type)
 
 
 def iter_stream_message_sse_events(

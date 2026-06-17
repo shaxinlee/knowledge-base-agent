@@ -24,7 +24,7 @@ API Base: /api/v1
 
 ### 1.2 认证
 
-除登录、刷新 token、健康检查外，所有业务接口默认要求：
+除登录、用户端可进入用户列表、用户端免密会话、刷新 token、健康检查外，所有业务接口默认要求：
 
 ```http
 Authorization: Bearer <access_token>
@@ -240,6 +240,59 @@ unhelpful
 - `ACCOUNT_DISABLED`
 - `ACCOUNT_LOCKED`
 
+### GET `/api/v1/auth/consumer-users`
+
+权限：公开接口。
+
+用途：to C 用户端入口页展示可进入用户下拉菜单。列表只返回 Admin 用户管理中已注册且启用的普通 `user` 账号，不返回 admin 或已禁用账号。
+
+请求：无请求体。
+
+响应：
+
+```json
+{
+  "items": [
+    {
+      "username": "alice",
+      "display_name": "Alice Zhang"
+    }
+  ]
+}
+```
+
+### POST `/api/v1/auth/consumer-session`
+
+权限：公开接口。
+
+用途：to C 用户端选择用户名后创建对应普通 `user` 角色会话。该接口不得签发 admin 权限，不要求用户输入密码。
+
+请求：
+
+```json
+{
+  "username": "alice"
+}
+```
+
+响应：同 `/auth/login`，其中 `user.role` 必须为 `user`。
+
+```json
+{
+  "access_token": "jwt_access_token",
+  "refresh_token": "jwt_refresh_token",
+  "token_type": "bearer",
+  "expires_in": 1800,
+  "user": {
+    "id": "usr_xxx",
+    "username": "alice",
+    "display_name": "Alice Zhang",
+    "role": "user",
+    "is_active": true
+  }
+}
+```
+
 ### POST `/api/v1/auth/refresh`
 
 权限：公开接口，但需要 refresh token。
@@ -419,6 +472,37 @@ Query：
 `GET /api/v1/users/me/profile` 与 `PATCH /api/v1/users/me/profile` 当前未实现。v0.1 Demo 不提供用户自助编辑 answer_style / language 偏好的接口。
 
 响应：Profile 对象。
+
+### Assistant Profile
+
+用于配置知识库助手在身份、能力、寒暄、感谢、使用说明、转人工和闲聊兜底等非知识库检索问题上的固定话术。
+
+#### GET `/api/v1/assistant-profile`
+
+权限：admin only。
+
+响应：
+
+```json
+{
+  "name": "知识库问答助手",
+  "identity_answer": "我是你的知识库问答助手，可以基于已接入的文档、制度、产品资料和业务知识回答问题。",
+  "capability_answer": "我可以帮你查询知识库内容、总结文档、解释流程、定位相关资料，并在答案中给出引用来源。",
+  "greeting_answer": "你好，我是知识库问答助手。你可以直接提问需要查询的制度、流程、产品资料或业务知识。",
+  "thanks_answer": "不客气，有需要查询知识库内容时可以继续问我。",
+  "usage_answer": "你可以直接输入问题，我会判断是否需要检索知识库；如果需要，我会基于已接入资料回答并给出引用来源。",
+  "handoff_answer": "当前我无法直接转接人工客服。你可以联系系统管理员或相关业务负责人处理人工支持需求。",
+  "fallback_casual_answer": "我是知识库问答助手，更擅长回答已接入资料中的制度、流程、产品和业务知识问题。"
+}
+```
+
+#### PATCH `/api/v1/assistant-profile`
+
+权限：admin only。
+
+请求：与 `GET /api/v1/assistant-profile` 响应字段一致，所有字段均为非空字符串。
+
+响应：更新后的 Assistant Profile 对象。
 
 ## 5. Knowledge Bases API
 
@@ -1116,9 +1200,11 @@ Query：
 
 | 页面 | 需要调用的接口 |
 | --- | --- |
-| 登录页 | `POST /auth/login` |
+| 入口选择页 | 用户页面：`GET /auth/consumer-users`、`POST /auth/consumer-session`；管理员页面：进入登录页 |
+| 管理员登录页 | `POST /auth/login` |
 | 当前用户初始化 | `GET /auth/me` |
 | Admin 用户管理 | `GET /users`、`POST /users`、`PATCH /users/{id}`、`disable/enable/reset-password` |
+| 个人资料 | `GET /auth/me`、管理员额外调用 `GET/PATCH /assistant-profile` |
 | 知识库列表 | `GET /knowledge-bases` |
 | 知识库管理 | `POST/PATCH/DELETE /knowledge-bases` |
 | 文件列表 | `GET /knowledge-bases/{kb_id}/files` |

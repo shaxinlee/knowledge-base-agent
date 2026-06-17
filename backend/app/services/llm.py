@@ -13,6 +13,7 @@ from app.services.visual_citations import strip_visible_image_references
 
 PROMPT_VERSION = "rag-citations-v1"
 DEMO_PROMPT_VERSION = "template-demo-v1"
+DIRECT_PROMPT_VERSION = "direct-chat-v1"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,10 @@ class LLMClientProtocol(Protocol):
     def stream_answer(
         self, *, query: str, contexts: Sequence[RetrievalResultItem]
     ) -> Iterator[str]: ...
+
+    def generate_direct_answer(self, *, query: str) -> LLMAnswer: ...
+
+    def stream_direct_answer(self, *, query: str) -> Iterator[str]: ...
 
 
 class LLMApiClient:
@@ -109,6 +114,39 @@ class LLMApiClient:
                 details={"service": "llm-api", "error": str(exc)},
             ) from exc
 
+    def generate_direct_answer(self, *, query: str) -> LLMAnswer:
+        messages = build_direct_messages(query=query)
+        payload = {"model": self.model, "messages": messages, "stream": False}
+        try:
+            with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
+                response = client.post(
+                    build_chat_completions_url(self.base_url),
+                    headers=build_llm_headers(self.api_key),
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ApiError(
+                code="UPSTREAM_SERVICE_ERROR",
+                message="LLM API request failed.",
+                status_code=502,
+                details={"service": "llm-api", "error": str(exc)},
+            ) from exc
+        response_payload = response.json()
+        content = parse_chat_completion_content(response_payload)
+        return LLMAnswer(
+            content=content,
+            model=self.model,
+            prompt_version=DIRECT_PROMPT_VERSION,
+            raw_prompt_snapshot=json.dumps(messages, ensure_ascii=False),
+            token_usage=parse_token_usage(response_payload),
+        )
+
+    def stream_direct_answer(self, *, query: str) -> Iterator[str]:
+        answer = self.generate_direct_answer(query=query)
+        for index in range(0, len(answer.content), 16):
+            yield answer.content[index : index + 16]
+
 
 class TemplateDemoLLMClient:
     model = "template-demo"
@@ -131,6 +169,22 @@ class TemplateDemoLLMClient:
         self, *, query: str, contexts: Sequence[RetrievalResultItem]
     ) -> Iterator[str]:
         answer = self.generate_answer(query=query, contexts=contexts)
+        for index in range(0, len(answer.content), 16):
+            yield answer.content[index : index + 16]
+
+    def generate_direct_answer(self, *, query: str) -> LLMAnswer:
+        messages = build_direct_messages(query=query)
+        content = "你好，我是知识库问答助手。你可以直接提问需要查询的知识库内容。"
+        return LLMAnswer(
+            content=content,
+            model=self.model,
+            prompt_version=DIRECT_PROMPT_VERSION,
+            raw_prompt_snapshot=json.dumps(messages, ensure_ascii=False),
+            token_usage={},
+        )
+
+    def stream_direct_answer(self, *, query: str) -> Iterator[str]:
+        answer = self.generate_direct_answer(query=query)
         for index in range(0, len(answer.content), 16):
             yield answer.content[index : index + 16]
 
@@ -164,6 +218,21 @@ def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> li
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
+    ]
+
+
+def build_direct_messages(*, query: str) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful knowledge base assistant. Answer conversational or "
+                "product-usage questions directly without citing knowledge base sources. "
+                "If the user asks for business facts, policies, product documents, "
+                "procedures, or FAQ content, ask them to provide a knowledge-base question."
+            ),
+        },
+        {"role": "user", "content": query},
     ]
 
 

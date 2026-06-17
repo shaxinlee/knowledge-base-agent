@@ -9,7 +9,7 @@ from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import User, UserRole, UserStatus
+from app.models import User, UserProfile, UserRole, UserStatus
 from app.services.auth import create_default_admin
 
 
@@ -70,6 +70,129 @@ def test_login_refresh_and_me_with_default_admin() -> None:
         assert refresh_response.json()["token_type"] == "bearer"
         assert refresh_response.json()["access_token"]
         assert refresh_response.json()["refresh_token"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_consumer_session_creates_user_role_token_without_password() -> None:
+    session_factory = _make_session_factory()
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+
+        response = client.post("/api/v1/auth/consumer-session")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["token_type"] == "bearer"
+        assert body["access_token"]
+        assert body["refresh_token"]
+        assert body["user"]["username"] == "consumer"
+        assert body["user"]["role"] == "user"
+        assert body["user"]["is_active"] is True
+
+        users_response = client.get(
+            "/api/v1/users",
+            headers={"Authorization": f"Bearer {body['access_token']}"},
+        )
+        assert users_response.status_code == 403
+        assert users_response.json()["error"]["code"] == "FORBIDDEN"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_consumer_users_lists_active_registered_user_names() -> None:
+    session_factory = _make_session_factory()
+    with session_factory() as db:
+        create_default_admin(db)
+        alice = User(
+            email="alice@example.local",
+            username="alice",
+            password_hash=hash_password("AlicePassword123"),
+            role=UserRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+        )
+        alice.profile = UserProfile(display_name="Alice Zhang")
+        disabled = User(
+            email="disabled-user@example.local",
+            username="disabled-user",
+            password_hash=hash_password("DisabledPassword123"),
+            role=UserRole.USER.value,
+            status=UserStatus.DISABLED.value,
+        )
+        disabled.profile = UserProfile(display_name="Disabled User")
+        db.add_all([alice, disabled])
+        db.commit()
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+
+        response = client.get("/api/v1/auth/consumer-users")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "items": [{"username": "alice", "display_name": "Alice Zhang"}]
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_consumer_session_uses_selected_registered_user() -> None:
+    session_factory = _make_session_factory()
+    with session_factory() as db:
+        alice = User(
+            email="alice@example.local",
+            username="alice",
+            password_hash=hash_password("AlicePassword123"),
+            role=UserRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+        )
+        alice.profile = UserProfile(display_name="Alice Zhang")
+        db.add(alice)
+        db.commit()
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+
+        response = client.post("/api/v1/auth/consumer-session", json={"username": "alice"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["user"]["username"] == "alice"
+        assert body["user"]["display_name"] == "Alice Zhang"
+        assert body["user"]["role"] == "user"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_consumer_session_rejects_admin_username() -> None:
+    session_factory = _make_session_factory()
+    with session_factory() as db:
+        create_default_admin(db)
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+
+        response = client.post("/api/v1/auth/consumer-session", json={"username": "admin"})
+
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
     finally:
         app.dependency_overrides.clear()
 

@@ -10,6 +10,8 @@ from app.db.session import get_db
 from app.models import User
 from app.schemas.auth import (
     AuthUserResponse,
+    ConsumerSessionRequest,
+    ConsumerUserOptionsResponse,
     LoginRequest,
     LoginResponse,
     LogoutRequest,
@@ -20,8 +22,10 @@ from app.services.auth import (
     authenticate_user,
     build_auth_user_response,
     build_token_response,
+    create_consumer_session,
     ensure_refresh_token_not_revoked,
     get_user_by_id,
+    list_consumer_user_options,
     require_active_user,
     revoke_refresh_token,
 )
@@ -32,6 +36,19 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 @router.post("/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
     return authenticate_user(db, username=payload.username, password=payload.password)
+
+
+@router.get("/consumer-users", response_model=ConsumerUserOptionsResponse)
+def read_consumer_users(db: Session = Depends(get_db)) -> ConsumerUserOptionsResponse:
+    return list_consumer_user_options(db)
+
+
+@router.post("/consumer-session", response_model=LoginResponse)
+def consumer_session(
+    payload: ConsumerSessionRequest | None = None,
+    db: Session = Depends(get_db),
+) -> LoginResponse:
+    return create_consumer_session(db, username=payload.username if payload else None)
 
 
 @router.post("/refresh", response_model=TokenResponse)

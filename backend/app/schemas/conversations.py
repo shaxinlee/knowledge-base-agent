@@ -29,6 +29,22 @@ class CitationResponse(BaseModel):
     image_alt: str | None = None
 
 
+class MessageAttachmentInput(BaseModel):
+    type: str = Field(default="image")
+    file_name: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=1, max_length=100)
+    data_url: str = Field(min_length=1)
+
+
+class MessageAttachmentResponse(BaseModel):
+    id: str
+    type: str
+    file_name: str
+    media_type: str
+    size_bytes: int
+    url: str
+
+
 class MessageResponse(BaseModel):
     id: str
     conversation_id: str
@@ -36,7 +52,9 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     citations: list[CitationResponse]
+    attachments: list[MessageAttachmentResponse] = Field(default_factory=list)
     feedback_rating: str | None = None
+    visual_result_mode: str | None = None
 
 
 class ConversationDetailResponse(ConversationResponse):
@@ -51,8 +69,9 @@ class ConversationListResponse(BaseModel):
 
 
 class MessageCreateRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=8000)
+    content: str = Field(default="", max_length=8000)
     stream: bool = False
+    attachments: list[MessageAttachmentInput] = Field(default_factory=list, max_length=1)
 
 
 class MessageCreateResponse(BaseModel):

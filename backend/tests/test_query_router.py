@@ -4,7 +4,12 @@ import httpx
 from pytest import MonkeyPatch
 
 from app.core.config import get_settings
-from app.rag.query_router import LLMQueryRouter, RuleBasedQueryRouter
+from app.rag.query_router import (
+    LLMKnowledgeSearchRouter,
+    LLMQueryRouter,
+    RuleBasedKnowledgeSearchRouter,
+    RuleBasedQueryRouter,
+)
 
 
 def route_enabled(decision: object, modality: str) -> bool:
@@ -33,6 +38,17 @@ def test_image_query_routes_to_image_and_text() -> None:
     assert decision.search_image_vector is True
     assert decision.answer_policy.must_return_visual is True
     assert decision.intent == "visual_lookup"
+    assert decision.visual_result_mode == "single"
+
+
+def test_gallery_image_query_uses_gallery_visual_mode() -> None:
+    router = RuleBasedQueryRouter()
+
+    decision = router.route("查找关于支付系统的全部图")
+
+    assert route_enabled(decision, "image")
+    assert decision.search_image_vector is True
+    assert decision.visual_result_mode == "gallery"
 
 
 def test_multimodal_query_routes_to_text_and_image() -> None:
@@ -104,9 +120,11 @@ def test_llm_router_uses_model_json_and_normalizes_image_route(
     monkeypatch: MonkeyPatch,
 ) -> None:
     get_settings.cache_clear()
-    monkeypatch.setenv("LLM_API_BASE_URL", "https://llm.example/v1")
-    monkeypatch.setenv("LLM_API_KEY", "llm-key")
-    monkeypatch.setenv("LLM_MODEL", "router-model")
+    monkeypatch.setenv("INTENT_RECOGNITION_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("INTENT_RECOGNITION_API_KEY", "intent-key")
+    monkeypatch.setenv("INTENT_RECOGNITION_MODEL", "intent-router-model")
+    monkeypatch.setenv("INTENT_RECOGNITION_TEMPERATURE", "0.1")
+    monkeypatch.setenv("INTENT_RECOGNITION_MAX_TOKENS", "512")
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -175,18 +193,23 @@ def test_llm_router_uses_model_json_and_normalizes_image_route(
     assert decision.search_image_vector is False
     assert not route_enabled(decision, "image")
     assert decision.answer_policy.must_return_visual is False
-    assert captured["url"] == "https://llm.example/v1/chat/completions"
+    assert captured["url"] == "https://intent.example/v1/chat/completions"
     payload = captured["payload"]
     assert isinstance(payload, dict)
-    assert payload["model"] == "router-model"
+    assert payload["model"] == "intent-router-model"
+    assert payload["temperature"] == 0.1
+    assert payload["max_tokens"] == 512
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["authorization"] == "Bearer intent-key"
 
 
 def test_llm_router_enables_images_when_model_requests_image_vector(
     monkeypatch: MonkeyPatch,
 ) -> None:
     get_settings.cache_clear()
-    monkeypatch.setenv("LLM_API_BASE_URL", "https://llm.example/v1")
-    monkeypatch.setenv("LLM_MODEL", "router-model")
+    monkeypatch.setenv("INTENT_RECOGNITION_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("INTENT_RECOGNITION_MODEL", "intent-router-model")
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -243,8 +266,8 @@ def test_llm_router_enables_images_when_model_requests_image_vector(
 
 def test_llm_router_falls_back_to_rules_on_invalid_json(monkeypatch: MonkeyPatch) -> None:
     get_settings.cache_clear()
-    monkeypatch.setenv("LLM_API_BASE_URL", "https://llm.example/v1")
-    monkeypatch.setenv("LLM_MODEL", "router-model")
+    monkeypatch.setenv("INTENT_RECOGNITION_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("INTENT_RECOGNITION_MODEL", "intent-router-model")
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}]})
@@ -257,3 +280,96 @@ def test_llm_router_falls_back_to_rules_on_invalid_json(monkeypatch: MonkeyPatch
     assert decision.intent == "multimodal_lookup"
     assert decision.search_image_vector is True
     assert route_enabled(decision, "image")
+
+
+def test_rule_based_knowledge_search_router_returns_profile_answer_for_identity() -> None:
+    decision = RuleBasedKnowledgeSearchRouter().decide("你是谁？")
+
+    assert decision.research_base is False
+    assert decision.category == "identity"
+    assert "知识库问答助手" in (decision.direct_answer or "")
+
+
+def test_rule_based_knowledge_search_router_keeps_business_question_searchable() -> None:
+    decision = RuleBasedKnowledgeSearchRouter().decide("公司的报销流程是什么？")
+
+    assert decision.research_base is True
+    assert decision.category == "knowledge_base"
+
+
+def test_llm_knowledge_search_router_uses_classifier_false(monkeypatch: MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_API_KEY", "classifier-key")
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_MODEL", "qwen3.6-flash")
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "research_base=false"}}]},
+        )
+
+    try:
+        decision = LLMKnowledgeSearchRouter(transport=httpx.MockTransport(handler)).decide(
+            "随便聊聊"
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.research_base is False
+    assert decision.category == "llm_direct"
+    assert captured["url"] == "https://intent.example/v1/chat/completions"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "qwen3.6-flash"
+    assert payload["max_tokens"] == 32
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["authorization"] == "Bearer classifier-key"
+
+
+def test_llm_knowledge_search_router_uses_classifier_true(monkeypatch: MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_MODEL", "qwen3.6-flash")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "research_base=true"}}]},
+        )
+
+    try:
+        decision = LLMKnowledgeSearchRouter(transport=httpx.MockTransport(handler)).decide(
+            "公司的报销制度是什么？"
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.research_base is True
+    assert decision.category == "knowledge_base"
+
+
+def test_llm_knowledge_search_router_falls_back_to_search_on_invalid_output(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_MODEL", "qwen3.6-flash")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "maybe"}}]})
+
+    try:
+        decision = LLMKnowledgeSearchRouter(transport=httpx.MockTransport(handler)).decide(
+            "这个问题要不要查？"
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.research_base is True
+    assert decision.reason == "classifier_failed"

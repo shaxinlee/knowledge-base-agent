@@ -15,6 +15,9 @@ class EmbeddingClientProtocol(Protocol):
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         pass
 
+    def embed_images(self, image_data_urls: Sequence[str]) -> list[list[float]]:
+        pass
+
 
 class EmbeddingClient:
     def __init__(
@@ -73,12 +76,23 @@ class EmbeddingClient:
             )
         return vectors
 
+    def embed_images(self, image_data_urls: Sequence[str]) -> list[list[float]]:
+        raise ApiError(
+            code="MULTIMODAL_EMBEDDING_UNAVAILABLE",
+            message="Embedding client does not support image inputs.",
+            status_code=503,
+            details={"model": self.model},
+        )
+
 
 class LocalDemoEmbeddingClient:
     model = "local-demo-fixture-embedding"
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         return [build_local_demo_vector(text) for text in texts]
+
+    def embed_images(self, image_data_urls: Sequence[str]) -> list[list[float]]:
+        return [build_local_demo_vector(image_data_url) for image_data_url in image_data_urls]
 
 
 class QwenMultimodalTextEmbeddingClient:
@@ -91,6 +105,14 @@ class QwenMultimodalTextEmbeddingClient:
             return []
         results = self.provider.embed_batch(
             [EmbeddingRequest(input_type="text", content=text) for text in texts]
+        )
+        return [result.vector for result in results]
+
+    def embed_images(self, image_data_urls: Sequence[str]) -> list[list[float]]:
+        if not image_data_urls:
+            return []
+        results = self.provider.embed_batch(
+            [EmbeddingRequest(input_type="image", content=image_data_url) for image_data_url in image_data_urls]
         )
         return [result.vector for result in results]
 

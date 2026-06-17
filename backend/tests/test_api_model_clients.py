@@ -204,6 +204,8 @@ def test_image_description_client_calls_openai_compatible_vision_model() -> None
         base_url="https://vision.example/v1",
         api_key="vision-key",
         model="qwen3.6-flash",
+        temperature=0.3,
+        max_tokens=640,
         transport=httpx.MockTransport(handler),
     )
 
@@ -221,6 +223,8 @@ def test_image_description_client_calls_openai_compatible_vision_model() -> None
     assert captured["url"] == "https://vision.example/v1/chat/completions"
     payload = cast(dict[str, Any], captured["payload"])
     assert payload["model"] == "qwen3.6-flash"
+    assert payload["temperature"] == 0.3
+    assert payload["max_tokens"] == 640
     content = cast(
         list[dict[str, Any]], cast(list[dict[str, Any]], payload["messages"])[0]["content"]
     )

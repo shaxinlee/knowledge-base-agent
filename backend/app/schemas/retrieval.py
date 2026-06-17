@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 class RetrievalSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
+    query_image_vector: list[float] | None = None
     vector_top_k: int = Field(default=50, ge=1, le=100)
     full_text_top_k: int = Field(default=50, ge=1, le=100)
     top_k: int = Field(default=8, ge=1, le=20)

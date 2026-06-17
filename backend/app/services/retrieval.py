@@ -70,6 +70,12 @@ def search_knowledge_base(
         embedding_client=embedding_client,
         vector_index_client=vector_index_client,
     )
+    image_vector_candidates = search_image_vector_candidates(
+        query_image_vector=payload.query_image_vector,
+        knowledge_base_id=knowledge_base_id,
+        limit=payload.vector_top_k,
+        vector_index_client=vector_index_client,
+    )
     full_text_candidates = search_keyword_candidates(
         db,
         query=query,
@@ -77,7 +83,10 @@ def search_knowledge_base(
         limit=payload.full_text_top_k,
         bm25_index_client=bm25_index_client,
     )
-    merged_candidates = merge_candidates(vector_candidates, full_text_candidates)
+    merged_candidates = merge_candidates(
+        image_vector_candidates + vector_candidates,
+        full_text_candidates,
+    )
     rerank_input_candidates = merged_candidates[:RERANK_CANDIDATE_LIMIT]
     chunks_by_id = load_chunks(
         db,
@@ -183,6 +192,30 @@ def search_vector_candidates(
         limit=limit,
     )
     return [build_vector_candidate(hit) for hit in hits if extract_chunk_id(hit) is not None]
+
+
+def search_image_vector_candidates(
+    *,
+    query_image_vector: list[float] | None,
+    knowledge_base_id: UUID,
+    limit: int,
+    vector_index_client: VectorIndexClientProtocol,
+) -> list[RetrievalCandidate]:
+    if not query_image_vector:
+        return []
+    hits = vector_index_client.search_points(
+        vector=query_image_vector,
+        knowledge_base_id=str(knowledge_base_id),
+        limit=limit,
+        modality="image",
+    )
+    candidates: list[RetrievalCandidate] = []
+    for hit in hits:
+        chunk_id = extract_chunk_id(hit)
+        if chunk_id is None:
+            continue
+        candidates.append(RetrievalCandidate(chunk_id=chunk_id, score=hit.score, source="vector"))
+    return candidates
 
 
 def build_vector_candidate(hit: VectorSearchHit) -> RetrievalCandidate:

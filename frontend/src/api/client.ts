@@ -1,7 +1,10 @@
 import type {
   AuditLog,
   AuditLogListQuery,
+  AssistantProfile,
   Chunk,
+  ConsumerSessionRequest,
+  ConsumerUserOptionsResponse,
   Conversation,
   ConversationCreateRequest,
   ConversationDetail,
@@ -76,6 +79,22 @@ export async function login(payload: LoginRequest): Promise<LoginResponse> {
   })
 }
 
+export async function listConsumerUsers(): Promise<ConsumerUserOptionsResponse> {
+  return apiRequest<ConsumerUserOptionsResponse>('/auth/consumer-users', {
+    skipAuth: true,
+  })
+}
+
+export async function createConsumerSession(
+  payload: ConsumerSessionRequest,
+): Promise<LoginResponse> {
+  return apiRequest<LoginResponse>('/auth/consumer-session', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    skipAuth: true,
+  })
+}
+
 export async function getCurrentUser(): Promise<User> {
   return apiRequest<User>('/auth/me')
 }
@@ -135,6 +154,19 @@ export async function resetUserPassword(
 ): Promise<ResetPasswordResponse> {
   return apiRequest<ResetPasswordResponse>(`/users/${userId}/reset-password`, {
     method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getAssistantProfile(): Promise<AssistantProfile> {
+  return apiRequest<AssistantProfile>('/assistant-profile')
+}
+
+export async function updateAssistantProfile(
+  payload: AssistantProfile,
+): Promise<AssistantProfile> {
+  return apiRequest<AssistantProfile>('/assistant-profile', {
+    method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }

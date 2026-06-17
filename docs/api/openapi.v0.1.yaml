@@ -54,6 +54,42 @@ paths:
           $ref: "#/components/responses/Error"
         "423":
           $ref: "#/components/responses/Error"
+  /auth/consumer-users:
+    get:
+      tags: [Auth]
+      security: []
+      summary: List selectable consumer users
+      description: Returns active user-role accounts for the to C entry page user selector.
+      responses:
+        "200":
+          description: Selectable consumer users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumerUserOptionsResponse"
+  /auth/consumer-session:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Create a passwordless consumer user session
+      description: Creates a passwordless session for the selected active user-role account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsumerSessionRequest"
+      responses:
+        "200":
+          description: Consumer session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /auth/refresh:
     post:
       tags: [Auth]
@@ -101,6 +137,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/User"
         "401":
+          $ref: "#/components/responses/Error"
+  /assistant-profile:
+    get:
+      tags: [Assistant Profile]
+      summary: Get assistant profile
+      responses:
+        "200":
+          description: Assistant profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantProfile"
+        "403":
+          $ref: "#/components/responses/Error"
+    patch:
+      tags: [Assistant Profile]
+      summary: Update assistant profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistantProfile"
+      responses:
+        "200":
+          description: Updated assistant profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantProfile"
+        "403":
           $ref: "#/components/responses/Error"
   /users:
     get:
@@ -695,6 +762,28 @@ components:
         password:
           type: string
           format: password
+    ConsumerSessionRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+    ConsumerUserOption:
+      type: object
+      required: [username, display_name]
+      properties:
+        username:
+          type: string
+        display_name:
+          type: string
+    ConsumerUserOptionsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConsumerUserOption"
     RefreshTokenRequest:
       type: object
       required: [refresh_token]
@@ -723,6 +812,34 @@ components:
           properties:
             user:
               $ref: "#/components/schemas/User"
+    AssistantProfile:
+      type: object
+      required:
+        - name
+        - identity_answer
+        - capability_answer
+        - greeting_answer
+        - thanks_answer
+        - usage_answer
+        - handoff_answer
+        - fallback_casual_answer
+      properties:
+        name:
+          type: string
+        identity_answer:
+          type: string
+        capability_answer:
+          type: string
+        greeting_answer:
+          type: string
+        thanks_answer:
+          type: string
+        usage_answer:
+          type: string
+        handoff_answer:
+          type: string
+        fallback_casual_answer:
+          type: string
     User:
       type: object
       required: [id, username, display_name, role, is_active, created_at]

@@ -1,27 +1,32 @@
 :root {
-  --ka-primary: #0052d9;
-  --ka-primary-deep: #003da6;
-  --ka-surface: #faf8ff;
+  --ka-primary: #0f766e;
+  --ka-primary-deep: #115e59;
+  --ka-primary-soft: #d9f3ee;
+  --ka-accent: #b45309;
+  --ka-accent-soft: #fff4de;
+  --ka-surface: #f7f8f6;
   --ka-surface-lowest: #ffffff;
-  --ka-surface-low: #f3f3fe;
-  --ka-surface-container: #ededf8;
-  --ka-surface-high: #e7e7f3;
-  --ka-background: #f2f3f5;
-  --ka-border: #dcdfe6;
-  --ka-border-strong: #c3c6d7;
-  --ka-text: #1d2129;
-  --ka-text-secondary: #4e5969;
-  --ka-placeholder: #86909c;
-  --ka-success: #2ba471;
-  --ka-warning: #e37318;
-  --ka-error: #d54941;
+  --ka-surface-low: #f1f4f2;
+  --ka-surface-container: #e8eeeb;
+  --ka-surface-high: #dce6e2;
+  --ka-background: #eef1ef;
+  --ka-border: #d7dedb;
+  --ka-border-strong: #aebbb6;
+  --ka-text: #17201d;
+  --ka-text-secondary: #5f6b66;
+  --ka-placeholder: #8a9691;
+  --ka-success: #16835f;
+  --ka-warning: #b45309;
+  --ka-error: #c24135;
   --ka-sidebar-width: 220px;
   --ka-header-height: 60px;
   color: var(--ka-text);
   background: var(--ka-background);
   font-family:
-    Inter,
-    'Hanken Grotesk',
+    'IBM Plex Sans',
+    'Noto Sans SC',
+    'PingFang SC',
+    'Microsoft YaHei',
     ui-sans-serif,
     system-ui,
     -apple-system,
@@ -71,7 +76,7 @@ a {
   width: fit-content;
   min-height: 24px;
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
   line-height: 18px;
@@ -80,27 +85,27 @@ a {
 
 .ka-status.success {
   color: var(--ka-success);
-  background: #e6f4ee;
+  background: #e2f4ed;
 }
 
 .ka-status.processing {
   color: var(--ka-primary);
-  background: #e8f0ff;
+  background: var(--ka-primary-soft);
 }
 
 .ka-status.warning {
   color: var(--ka-warning);
-  background: #fff3e8;
+  background: var(--ka-accent-soft);
 }
 
 .ka-status.danger {
   color: var(--ka-error);
-  background: #fff0ed;
+  background: #fff0ec;
 }
 
 .ka-status.muted {
   color: var(--ka-text-secondary);
-  background: #eef0f5;
+  background: #edf1ef;
 }
 
 .ka-card {
@@ -134,6 +139,7 @@ a {
   border: 1px solid var(--ka-border);
   border-radius: 8px;
   background: var(--ka-surface-lowest);
+  box-shadow: 0 8px 22px rgb(23 32 29 / 4%);
 }
 
 .ka-table {
@@ -149,7 +155,7 @@ a {
   font-weight: 700;
   line-height: 18px;
   text-align: left;
-  background: #f8f9fc;
+  background: #f4f7f5;
 }
 
 .ka-table td {
@@ -160,7 +166,7 @@ a {
 }
 
 .ka-table tr:hover td {
-  background: #fafbff;
+  background: #fbfcfb;
 }
 
 .ka-actions {
@@ -195,7 +201,7 @@ a {
 
 .ka-scrollbar::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: #d8dbe6;
+  background: #cbd5d1;
 }
 
 .el-button {
@@ -208,6 +214,8 @@ a {
   --el-button-border-color: var(--ka-primary);
   --el-button-hover-bg-color: var(--ka-primary-deep);
   --el-button-hover-border-color: var(--ka-primary-deep);
+  --el-button-active-bg-color: var(--ka-primary-deep);
+  --el-button-active-border-color: var(--ka-primary-deep);
 }
 
 .el-input__wrapper,
@@ -215,4 +223,16 @@ a {
 .el-textarea__inner {
   border-radius: 4px;
   box-shadow: 0 0 0 1px var(--ka-border) inset;
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px var(--ka-border-strong) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--ka-primary) inset;
 }

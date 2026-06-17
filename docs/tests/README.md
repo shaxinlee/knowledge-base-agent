@@ -6,6 +6,10 @@
 
 - `TDD.v0.1.md`：v0.1 测试设计文档，是测试范围、测试数据、测试用例、验收门槛和缺陷分级的事实来源。
 
+## 补充测试文档
+
+- `TDD.v0.1.consumer-frontend.md`：to C 用户端前端分层、路由权限、只读知识库和问答 UI 回归测试补充设计。主 TDD 仍是 v0.1 总测试基线，本补充文档只覆盖本次前端分层变更。
+
 ## 当前状态入口
 
 - `../demo/first-version-demo.md`：当前第一版基础 Web Demo 的可运行流程、验收边界和外部依赖缺口。
@@ -14,6 +18,7 @@
 ## 上游规范
 
 - `../specs/SDD.v0.1.md`：v0.1 主 SDD。
+- `../specs/SDD.v0.1.consumer-frontend.md`：to C 用户端前端分层补充 SDD。
 - `../api/frontend-backend-api-contract.md`：中文 API 契约。
 - `../api/openapi.v0.1.yaml`：OpenAPI 机器可读接口契约。
 

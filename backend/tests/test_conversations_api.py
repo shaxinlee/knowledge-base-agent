@@ -11,7 +11,10 @@ from sqlalchemy.pool import StaticPool
 from app.api.v1.conversations import (
     get_bm25_index_client,
     get_embedding_client,
+    get_image_description_client,
+    get_knowledge_search_router,
     get_llm_client,
+    get_object_storage,
     get_query_router,
     get_reranker_client,
     get_vector_index_client,
@@ -31,6 +34,7 @@ from app.models import (
     KnowledgeBase,
     KnowledgeBaseStatus,
     Message,
+    MessageAttachment,
     MessageCitation,
     MessageTrace,
     ParseJob,
@@ -43,8 +47,15 @@ from app.models import (
 from app.services.auth import create_default_admin
 from app.services.bm25_index import BM25IndexClientProtocol, BM25SearchHit
 from app.services.embedding import EmbeddingClientProtocol
+from app.services.image_descriptions import ImageDescriptionClientProtocol, ImageDescriptionInput
 from app.services.llm import LLMAnswer, LLMClientProtocol
-from app.rag.query_router import QueryRouterProtocol, RouteDecision, RuleBasedQueryRouter
+from app.rag.query_router import (
+    KnowledgeSearchDecision,
+    KnowledgeSearchRouterProtocol,
+    QueryRouterProtocol,
+    RouteDecision,
+    RuleBasedQueryRouter,
+)
 from app.services.reranker import RerankerClientProtocol
 from app.services.vector_index import VectorIndexClientProtocol, VectorSearchHit
 
@@ -58,6 +69,10 @@ class FakeEmbeddingClient:
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         self.requests.append(list(texts))
         return [[1.0, float(len(text))] for text in texts]
+
+    def embed_images(self, image_data_urls: Sequence[str]) -> list[list[float]]:
+        self.requests.append([f"image:{len(image_data_url)}" for image_data_url in image_data_urls])
+        return [[9.0, float(len(image_data_url))] for image_data_url in image_data_urls]
 
 
 class FakeVectorIndexClient:
@@ -82,9 +97,15 @@ class FakeVectorIndexClient:
         vector: list[float],
         knowledge_base_id: str,
         limit: int,
+        modality: str | None = None,
     ) -> list[VectorSearchHit]:
         self.searches.append(
-            {"vector": vector, "knowledge_base_id": knowledge_base_id, "limit": limit}
+            {
+                "vector": vector,
+                "knowledge_base_id": knowledge_base_id,
+                "limit": limit,
+                "modality": modality,
+            }
         )
         return self.hits[:limit]
 
@@ -155,6 +176,20 @@ class FakeLLMClient:
         answer = self.generate_answer(query=query, contexts=contexts)
         yield answer.content
 
+    def generate_direct_answer(self, *, query: str) -> LLMAnswer:
+        self.requests.append({"query": query, "contexts": [], "direct": True})
+        return LLMAnswer(
+            content=f"Direct answer for {query}",
+            model=self.model,
+            prompt_version="direct-chat-v1",
+            raw_prompt_snapshot="fake direct prompt",
+            token_usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+
+    def stream_direct_answer(self, *, query: str) -> Generator[str, None, None]:
+        answer = self.generate_direct_answer(query=query)
+        yield answer.content
+
 
 class FakeQueryRouter:
     def __init__(self) -> None:
@@ -164,6 +199,51 @@ class FakeQueryRouter:
     def route(self, query: str) -> RouteDecision:
         self.requests.append(query)
         return self.rule_based_router.route(query)
+
+
+class FakeKnowledgeSearchRouter:
+    def __init__(self, decision: KnowledgeSearchDecision | None = None) -> None:
+        self.decision = decision
+        self.requests: list[str] = []
+
+    def decide(self, query: str) -> KnowledgeSearchDecision:
+        self.requests.append(query)
+        return self.decision or KnowledgeSearchDecision(
+            research_base=True,
+            category="knowledge_base",
+            reason="test_default",
+        )
+
+
+class FakeImageDescriptionClient:
+    enabled = True
+    model = "fake-image-description"
+
+    def __init__(self) -> None:
+        self.requests: list[ImageDescriptionInput] = []
+
+    def describe_image(self, image: ImageDescriptionInput) -> str:
+        self.requests.append(image)
+        return "用户上传图片描述"
+
+
+class FakeObjectStorage:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], tuple[bytes, str | None]] = {}
+
+    def put_object(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        data: bytes,
+        content_type: str | None,
+        metadata: dict[str, str],
+    ) -> None:
+        self.objects[(bucket, key)] = (data, content_type)
+
+    def get_object(self, *, bucket: str, key: str) -> bytes:
+        return self.objects[(bucket, key)][0]
 
 
 def _make_session_factory() -> sessionmaker[Session]:
@@ -191,7 +271,10 @@ def _install_overrides(
     reranker_client: FakeRerankerClient | None = None,
     llm_client: FakeLLMClient | None = None,
     bm25_index_client: FakeBM25IndexClient | None = None,
+    knowledge_search_router: KnowledgeSearchRouterProtocol | None = None,
     query_router: QueryRouterProtocol | None = None,
+    image_description_client: ImageDescriptionClientProtocol | None = None,
+    object_storage: FakeObjectStorage | None = None,
 ) -> None:
     def override_db() -> Generator[Session, None, None]:
         yield from _override_db(session_factory)
@@ -214,13 +297,25 @@ def _install_overrides(
     def override_query_router() -> QueryRouterProtocol:
         return query_router or FakeQueryRouter()
 
+    def override_knowledge_search_router() -> KnowledgeSearchRouterProtocol:
+        return knowledge_search_router or FakeKnowledgeSearchRouter()
+
+    def override_image_description_client() -> ImageDescriptionClientProtocol:
+        return image_description_client or FakeImageDescriptionClient()
+
+    def override_object_storage() -> FakeObjectStorage:
+        return object_storage or FakeObjectStorage()
+
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_embedding_client] = override_embedding_client
     app.dependency_overrides[get_bm25_index_client] = override_bm25_index_client
     app.dependency_overrides[get_llm_client] = override_llm_client
+    app.dependency_overrides[get_knowledge_search_router] = override_knowledge_search_router
     app.dependency_overrides[get_query_router] = override_query_router
     app.dependency_overrides[get_reranker_client] = override_reranker_client
     app.dependency_overrides[get_vector_index_client] = override_vector_index_client
+    app.dependency_overrides[get_image_description_client] = override_image_description_client
+    app.dependency_overrides[get_object_storage] = override_object_storage
 
 
 def _login(client: TestClient, username: str, password: str) -> str:
@@ -572,6 +667,123 @@ def test_user_can_create_conversation_and_send_non_stream_message_with_citation(
         app.dependency_overrides.clear()
 
 
+def test_rule_direct_answer_skips_knowledge_base_retrieval() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id = _seed_empty_knowledge_base(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(hits=[])
+    reranker_client = FakeRerankerClient()
+    bm25_index_client = FakeBM25IndexClient(enabled=True)
+    llm_client = FakeLLMClient()
+    query_router = FakeQueryRouter()
+    knowledge_search_router = FakeKnowledgeSearchRouter(
+        KnowledgeSearchDecision(
+            research_base=False,
+            category="identity",
+            reason="rule_matched",
+            direct_answer="我是你的知识库问答助手。",
+        )
+    )
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+        bm25_index_client,
+        knowledge_search_router,
+        query_router,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Direct Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "你是谁？", "stream": False},
+        )
+        assert message_response.status_code == 200
+        assistant = message_response.json()["assistant_message"]
+        assert assistant["content"] == "我是你的知识库问答助手。"
+        assert assistant["citations"] == []
+        assert embedding_client.requests == []
+        assert vector_index_client.searches == []
+        assert reranker_client.requests == []
+        assert bm25_index_client.searches == []
+        assert llm_client.requests == []
+        assert query_router.requests == []
+
+        with session_factory() as db:
+            trace = db.scalar(select(MessageTrace))
+        assert trace is not None
+        assert trace.retrieved_chunk_ids == []
+        assert trace.reranked_chunk_ids == []
+        assert trace.final_context_chunk_ids == []
+        assert trace.final_cited_chunk_ids == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_classifier_non_research_uses_direct_llm_without_retrieval() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id = _seed_empty_knowledge_base(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(hits=[])
+    reranker_client = FakeRerankerClient()
+    llm_client = FakeLLMClient()
+    knowledge_search_router = FakeKnowledgeSearchRouter(
+        KnowledgeSearchDecision(
+            research_base=False,
+            category="llm_direct",
+            reason="classifier",
+        )
+    )
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+        knowledge_search_router=knowledge_search_router,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Direct LLM"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "随便聊聊", "stream": False},
+        )
+        assert message_response.status_code == 200
+        assistant = message_response.json()["assistant_message"]
+        assert assistant["content"] == "Direct answer for 随便聊聊"
+        assert assistant["citations"] == []
+        assert llm_client.requests == [{"query": "随便聊聊", "contexts": [], "direct": True}]
+        assert embedding_client.requests == []
+        assert vector_index_client.searches == []
+        assert reranker_client.requests == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_message_context_expands_matched_chunk_to_full_section() -> None:
     session_factory = _make_session_factory()
     knowledge_base_id, chunk_ids = _seed_sectioned_chunks(session_factory)
@@ -730,6 +942,80 @@ def test_visual_query_routes_image_context_and_returns_image_citation() -> None:
         app.dependency_overrides.clear()
 
 
+def test_image_attachment_is_saved_and_used_for_multimodal_search() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, chunk_ids = _seed_visual_chunks(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(
+        hits=[
+            VectorSearchHit(
+                point_id=str(chunk_ids[1]),
+                score=0.95,
+                payload={
+                    "chunk_id": str(chunk_ids[1]),
+                    "knowledge_base_id": str(knowledge_base_id),
+                },
+            )
+        ]
+    )
+    reranker_client = FakeRerankerClient(scores=[0.9])
+    llm_client = FakeLLMClient()
+    object_storage = FakeObjectStorage()
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+        object_storage=object_storage,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Image Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        image_data_url = "data:image/png;base64,iVBORw0KGgo="
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={
+                "content": "查找与我这个图片比较相似的图",
+                "stream": False,
+                "attachments": [
+                    {
+                        "type": "image",
+                        "file_name": "query.png",
+                        "media_type": "image/png",
+                        "data_url": image_data_url,
+                    }
+                ],
+            },
+        )
+        assert message_response.status_code == 200
+        body = message_response.json()
+        assert body["user_message"]["attachments"][0]["file_name"] == "query.png"
+        assert body["assistant_message"]["visual_result_mode"] == "gallery"
+        assert any(search["modality"] == "image" for search in vector_index_client.searches)
+
+        attachment_url = body["user_message"]["attachments"][0]["url"]
+        asset_response = client.get(attachment_url, headers=_headers(token))
+        assert asset_response.status_code == 200
+        assert asset_response.content == b"\x89PNG\r\n\x1a\n"
+
+        with session_factory() as db:
+            attachment = db.scalar(select(MessageAttachment))
+        assert attachment is not None
+        assert attachment.file_name == "query.png"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_non_visual_query_suppresses_image_context_and_history_citation_images() -> None:
     session_factory = _make_session_factory()
     knowledge_base_id, chunk_ids = _seed_visual_chunks(session_factory)
@@ -869,6 +1155,67 @@ def test_user_can_send_stream_message_and_receive_sse_events() -> None:
         assert len(messages) == 2
         assert citation is not None
         assert trace is not None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_stream_rule_direct_answer_returns_zero_retrieval_events() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id = _seed_empty_knowledge_base(session_factory)
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(hits=[])
+    reranker_client = FakeRerankerClient()
+    knowledge_search_router = FakeKnowledgeSearchRouter(
+        KnowledgeSearchDecision(
+            research_base=False,
+            category="greeting",
+            reason="rule_matched",
+            direct_answer="你好，我是知识库问答助手。",
+        )
+    )
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        knowledge_search_router=knowledge_search_router,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Stream Direct"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "你好", "stream": True},
+        )
+        assert message_response.status_code == 200
+        text = message_response.text
+        assert "event: message_created" in text
+        assert "event: retrieval" in text
+        assert '"retrieved_count": 0' in text
+        assert '"reranked_count": 0' in text
+        assert '"final_context_count": 0' in text
+        assert "你好，我是知识库问答助手。" in text
+        assert '"citations": []' in text
+        assert embedding_client.requests == []
+        assert vector_index_client.searches == []
+        assert reranker_client.requests == []
+
+        with session_factory() as db:
+            citation = db.scalar(select(MessageCitation))
+            trace = db.scalar(select(MessageTrace))
+        assert citation is None
+        assert trace is not None
+        assert trace.final_context_chunk_ids == []
     finally:
         app.dependency_overrides.clear()
 

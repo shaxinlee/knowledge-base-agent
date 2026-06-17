@@ -17,8 +17,8 @@ import AppLayout from '@/components/AppLayout.vue'
         <RouterLink to="/chat">
           <el-button type="primary"> 返回对话问答 </el-button>
         </RouterLink>
-        <RouterLink to="/knowledge-bases">
-          <el-button>返回知识库</el-button>
+        <RouterLink to="/knowledge">
+          <el-button>查看知识库</el-button>
         </RouterLink>
       </div>
     </section>
