@@ -2,7 +2,7 @@ import base64
 import binascii
 import hashlib
 import re
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -51,6 +51,11 @@ from app.services.chunk_text import build_display_chunk_text
 from app.services.content_normalization import normalize_special_elements
 from app.services.embedding import EmbeddingClientProtocol
 from app.services.image_descriptions import ImageDescriptionClientProtocol, ImageDescriptionInput
+from app.services.knowledge_overall import (
+    OVERALL_PROMPT_VERSION,
+    build_knowledge_overall_answer,
+    read_knowledge_base_overall,
+)
 from app.services.llm import DIRECT_PROMPT_VERSION, LLMClientProtocol, build_refusal_answer
 from app.services.object_storage import ObjectStorage
 from app.services.reranker import RerankerClientProtocol
@@ -87,6 +92,8 @@ class DecodedMessageAttachment:
 DEFAULT_IMAGE_QUERY_TEXT = "请分析这张图片并检索相关知识库内容"
 ALLOWED_MESSAGE_IMAGE_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 DATA_URL_PATTERN = re.compile(r"^data:(?P<media_type>[-\w.]+/[-\w.+]+);base64,(?P<data>.+)$", re.S)
+OVERALL_CONTEXT_CHUNK_ID = "00000000-0000-0000-0000-000000000000"
+OVERALL_CONTEXT_FILE_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def list_conversations(
@@ -217,6 +224,49 @@ def create_message(
         knowledge_search_router=knowledge_search_router,
         query_router=query_router,
     )
+    if message_context.knowledge_search_decision.category == "knowledge_base_overall":
+        overall_content = read_knowledge_base_overall(
+            db,
+            knowledge_base_id=message_context.conversation.knowledge_base_id,
+            storage=storage,
+        )
+        assistant_content = sanitize_visible_text(build_knowledge_overall_answer(overall_content))
+        assistant_message, citation_rows = save_assistant_message(
+            db,
+            conversation=message_context.conversation,
+            current_user=current_user,
+            content=assistant_content,
+            model_name="knowledge-overall",
+            prompt_version=OVERALL_PROMPT_VERSION,
+            final_context_items=[],
+            allow_images=False,
+        )
+        save_message_trace(
+            db,
+            assistant_message=assistant_message,
+            query_text=message_context.query_text,
+            retrieval_items=[],
+            final_context_items=[],
+            embedding_model=embedding_client.model,
+            reranker_model=reranker_client.model,
+            chat_model="knowledge-overall",
+            prompt_version=OVERALL_PROMPT_VERSION,
+            token_usage={},
+            raw_prompt_snapshot=overall_content,
+        )
+        message_context.conversation.updated_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(message_context.user_message)
+        db.refresh(assistant_message)
+        return MessageCreateResponse(
+            user_message=build_message_response(
+                message_context.user_message,
+                [],
+                attachments=build_attachment_responses(message_context.user_attachments),
+            ),
+            assistant_message=build_message_response(assistant_message, []),
+        )
+
     if not message_context.knowledge_search_decision.research_base:
         if message_context.knowledge_search_decision.direct_answer:
             assistant_content = sanitize_visible_text(
@@ -281,6 +331,7 @@ def create_message(
     db.refresh(assistant_message)
     for citation in citation_rows:
         db.refresh(citation)
+    citable_context_items = get_citable_context_items(message_context.final_context_items)
 
     return MessageCreateResponse(
         user_message=build_message_response(
@@ -293,7 +344,7 @@ def create_message(
             [
                 build_citation_response(
                     citation,
-                    context_item=message_context.final_context_items[index],
+                    context_item=citable_context_items[index],
                     allow_images=bool(
                         message_context.route_decision
                         and message_context.route_decision.search_image_vector
@@ -382,12 +433,63 @@ def stream_create_message_events(
     )
 
     knowledge_search_decision = knowledge_search_router.decide(augmented_query_text)
+
+    if knowledge_search_decision.category == "knowledge_base_overall":
+        overall_content = read_knowledge_base_overall(
+            db,
+            knowledge_base_id=conversation.knowledge_base_id,
+            storage=storage,
+        )
+        yield (
+            "retrieval",
+            {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
+        )
+        assistant_content = ""
+        for token in split_stream_text(build_knowledge_overall_answer(overall_content)):
+            safe_token = sanitize_visible_text(token)
+            assistant_content += safe_token
+            if safe_token:
+                yield ("token", {"text": safe_token})
+
+        assistant_content = sanitize_visible_text(assistant_content)
+        assistant_message.content = assistant_content
+        assistant_message.status = "completed"
+        assistant_message.model_name = "knowledge-overall"
+        assistant_message.prompt_version = OVERALL_PROMPT_VERSION
+        save_message_trace(
+            db,
+            assistant_message=assistant_message,
+            query_text=augmented_query_text,
+            retrieval_items=[],
+            final_context_items=[],
+            embedding_model=embedding_client.model,
+            reranker_model=reranker_client.model,
+            chat_model="knowledge-overall",
+            prompt_version=OVERALL_PROMPT_VERSION,
+            token_usage={},
+            raw_prompt_snapshot=overall_content,
+        )
+        conversation.updated_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(assistant_message)
+        yield (
+            "done",
+            {
+                "message_id": str(assistant_message.id),
+                "answer": assistant_content,
+                "citations": [],
+                "visual_result_mode": None,
+            },
+        )
+        return
+
     if not knowledge_search_decision.research_base:
         yield (
             "retrieval",
             {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
         )
         assistant_content = ""
+        token_source: Iterator[str]
         if knowledge_search_decision.direct_answer:
             token_source = split_stream_text(knowledge_search_decision.direct_answer)
             prompt_version = "assistant-profile-v1"
@@ -457,6 +559,16 @@ def stream_create_message_events(
         final_context_items,
         route_decision=route_decision,
     )
+    if knowledge_search_decision.category == "mixed":
+        overall_content = read_knowledge_base_overall(
+            db,
+            knowledge_base_id=conversation.knowledge_base_id,
+            storage=storage,
+        )
+        final_context_items = [
+            build_overall_context_item(overall_content),
+            *final_context_items,
+        ]
 
     yield (
         "retrieval",
@@ -492,7 +604,8 @@ def stream_create_message_events(
     db.flush()
 
     citation_rows: list[MessageCitation] = []
-    for index, item in enumerate(final_context_items, start=1):
+    citable_context_items = get_citable_context_items(final_context_items)
+    for index, item in enumerate(citable_context_items, start=1):
         citation = MessageCitation(
             message_id=assistant_message.id,
             chunk_id=UUID(item.chunk_id),
@@ -533,7 +646,7 @@ def stream_create_message_events(
             "citations": [
                 build_citation_response(
                     citation,
-                    context_item=final_context_items[index],
+                    context_item=citable_context_items[index],
                     allow_images=route_decision.search_image_vector,
                 ).model_dump(mode="json")
                 for index, citation in enumerate(citation_rows)
@@ -586,6 +699,23 @@ def prepare_message_context(
     )
 
     knowledge_search_decision = knowledge_search_router.decide(augmented_query_text)
+    if knowledge_search_decision.category == "knowledge_base_overall":
+        return MessageContext(
+            conversation=conversation,
+            user_message=user_message,
+            user_attachments=user_attachments,
+            query_text=augmented_query_text,
+            query_image_vector=query_image_vector,
+            knowledge_search_decision=KnowledgeSearchDecision(
+                research_base=False,
+                category="knowledge_base_overall",
+                reason="overall_query_matched",
+            ),
+            route_decision=None,
+            retrieval_items=[],
+            final_context_items=[],
+        )
+
     if not knowledge_search_decision.research_base:
         return MessageContext(
             conversation=conversation,
@@ -624,6 +754,16 @@ def prepare_message_context(
         final_context_items,
         route_decision=route_decision,
     )
+    if knowledge_search_decision.category == "mixed":
+        overall_content = read_knowledge_base_overall(
+            db,
+            knowledge_base_id=conversation.knowledge_base_id,
+            storage=storage,
+        )
+        final_context_items = [
+            build_overall_context_item(overall_content),
+            *final_context_items,
+        ]
     return MessageContext(
         conversation=conversation,
         user_message=user_message,
@@ -660,7 +800,7 @@ def save_assistant_message(
     db.add(assistant_message)
     db.flush()
     citation_rows: list[MessageCitation] = []
-    for index, item in enumerate(final_context_items, start=1):
+    for index, item in enumerate(get_citable_context_items(final_context_items), start=1):
         citation = MessageCitation(
             message_id=assistant_message.id,
             chunk_id=UUID(item.chunk_id),
@@ -674,6 +814,29 @@ def save_assistant_message(
         db.add(citation)
         citation_rows.append(citation)
     return assistant_message, citation_rows
+
+
+def build_overall_context_item(overall_content: str) -> RetrievalResultItem:
+    return RetrievalResultItem(
+        chunk_id=OVERALL_CONTEXT_CHUNK_ID,
+        file_id=OVERALL_CONTEXT_FILE_ID,
+        file_name="knowledge-base-overall.md",
+        source_locator="knowledge_base:overall",
+        excerpt=build_knowledge_overall_answer(overall_content),
+        score=1.0,
+        source="metadata",
+        modality="metadata",
+    )
+
+
+def is_overall_context_item(item: RetrievalResultItem) -> bool:
+    return item.chunk_id == OVERALL_CONTEXT_CHUNK_ID and item.source == "metadata"
+
+
+def get_citable_context_items(
+    final_context_items: Sequence[RetrievalResultItem],
+) -> list[RetrievalResultItem]:
+    return [item for item in final_context_items if not is_overall_context_item(item)]
 
 
 def save_message_trace(
@@ -690,15 +853,16 @@ def save_message_trace(
     token_usage: dict[str, Any],
     raw_prompt_snapshot: str | None,
 ) -> None:
-    cited_chunk_ids = [item.chunk_id for item in final_context_items]
+    final_context_chunk_ids = [item.chunk_id for item in final_context_items]
+    final_cited_chunk_ids = [item.chunk_id for item in get_citable_context_items(final_context_items)]
     db.add(
         MessageTrace(
             message_id=assistant_message.id,
             query_text=query_text,
             retrieved_chunk_ids=[item.chunk_id for item in retrieval_items],
             reranked_chunk_ids=[item.chunk_id for item in retrieval_items],
-            final_context_chunk_ids=cited_chunk_ids,
-            final_cited_chunk_ids=cited_chunk_ids,
+            final_context_chunk_ids=final_context_chunk_ids,
+            final_cited_chunk_ids=final_cited_chunk_ids,
             reranker_scores=build_reranker_scores(retrieval_items),
             embedding_model=embedding_model,
             reranker_model=reranker_model,

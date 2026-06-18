@@ -21,6 +21,7 @@ from app.services.image_descriptions import (
     get_image_description_client,
 )
 from app.services.indexing import index_parse_job
+from app.services.knowledge_overall import rebuild_knowledge_base_overall
 from app.services.mineru import MineruClient, get_mineru_client
 from app.services.object_storage import ObjectStorage, get_object_storage
 from app.services.vector_index import VectorIndexClientProtocol, get_vector_index_client
@@ -199,6 +200,17 @@ def advance_parse_job_once(
         normalize_parse_job_result(db, file=file, parse_job=parse_job, storage=storage)
     elif parse_job.status == ParseJobStatus.CHUNKING.value:
         generate_chunks_for_parse_job(db, file=file, parse_job=parse_job)
+        try:
+            rebuild_knowledge_base_overall(
+                db,
+                knowledge_base_id=file.knowledge_base_id,
+                storage=storage,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to update knowledge overall after chunking parse_job_id=%s",
+                parse_job_id,
+            )
     elif parse_job.status == ParseJobStatus.EMBEDDING.value:
         enrich_image_chunk_descriptions(
             db,
@@ -214,6 +226,7 @@ def advance_parse_job_once(
             embedding_client=embedding_client,
             vector_index_client=vector_index_client,
             bm25_index_client=bm25_index_client,
+            storage=storage,
         )
     else:
         return False

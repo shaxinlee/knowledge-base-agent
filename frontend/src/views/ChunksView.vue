@@ -406,7 +406,21 @@ function handleError(error: unknown): void {
                 <p v-if="block.type === 'paragraph'" class="content-paragraph">
                   {{ block.text }}
                 </p>
-                <div v-else class="chunk-table-wrap">
+                <p v-else-if="block.type === 'heading'" class="content-heading">
+                  {{ block.text }}
+                </p>
+                <ul v-else-if="block.type === 'list'" class="content-list">
+                  <li v-for="(item, index) in block.items" :key="index">
+                    {{ item }}
+                  </li>
+                </ul>
+                <blockquote v-else-if="block.type === 'quote'" class="content-quote">
+                  <p v-for="(line, index) in block.lines" :key="index">
+                    {{ line }}
+                  </p>
+                </blockquote>
+                <pre v-else-if="block.type === 'code'" class="content-code"><code>{{ block.code }}</code></pre>
+                <div v-else-if="block.type === 'table'" class="chunk-table-wrap">
                   <table class="chunk-table">
                     <thead>
                       <tr>
@@ -639,6 +653,55 @@ function handleError(error: unknown): void {
   color: var(--ka-text-secondary);
   line-height: 1.7;
   white-space: pre-wrap;
+}
+
+.content-heading {
+  margin: 10px 0 6px;
+  color: var(--ka-text);
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.content-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ka-text-secondary);
+  line-height: 1.6;
+}
+
+.content-quote {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--ka-primary);
+  color: var(--ka-text-secondary);
+  background: #f7f9ff;
+}
+
+.content-quote p {
+  margin: 0 0 4px;
+}
+
+.content-quote p:last-child {
+  margin-bottom: 0;
+}
+
+.content-code {
+  max-width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: 6px;
+  color: var(--ka-text-secondary);
+  background: #f4f5f8;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.content-code code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  white-space: pre;
 }
 
 .image-grid {

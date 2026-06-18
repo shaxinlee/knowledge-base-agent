@@ -151,13 +151,78 @@ class QueryRouterProtocol(Protocol):
 
 class KnowledgeSearchDecision(BaseModel):
     research_base: bool
-    category: str = "knowledge_base"
+    category: str = "normal_rag"
     reason: str = ""
     direct_answer: str | None = None
 
 
 class KnowledgeSearchRouterProtocol(Protocol):
     def decide(self, query: str) -> KnowledgeSearchDecision: ...
+
+
+OVERALL_SCOPE_KEYWORDS = (
+    "当前知识库",
+    "这个知识库",
+    "本知识库",
+    "知识库里",
+    "知识库中",
+)
+
+OVERALL_ACTION_KEYWORDS = (
+    "有哪些文件",
+    "有哪些文档",
+    "有哪些资料",
+    "包含哪些",
+    "包含什么",
+    "有什么数据",
+    "哪些数据",
+    "有哪些数据",
+    "文件列表",
+    "文档列表",
+    "资料列表",
+    "数据范围",
+    "资料范围",
+    "概览",
+    "总览",
+    "overview",
+    "catalog",
+    "inventory",
+)
+
+OVERALL_WEAK_KEYWORDS = (
+    "包含什么",
+    "有什么数据",
+    "哪些数据",
+    "有哪些数据",
+    "主要内容",
+    "大概内容",
+    "整体概括",
+    "总体概括",
+)
+
+OVERALL_SUBJECT_KEYWORDS = (
+    "知识库",
+    "文件",
+    "文档",
+    "资料",
+    "数据",
+)
+
+MIXED_INTENT_KEYWORDS = (
+    "然后",
+    "再",
+    "同时",
+    "并且",
+    "并总结",
+    "并分析",
+    "并说明",
+    "并回答",
+    "以及",
+    "顺便",
+    "再帮我",
+    "再总结",
+    "再分析",
+)
 
 
 class RuleBasedKnowledgeSearchRouter:
@@ -232,16 +297,30 @@ class RuleBasedKnowledgeSearchRouter:
                     reason="rule_matched",
                     direct_answer=get_profile_answer(category),
                 )
+        overall_hit = is_overall_query(normalized_query)
+        mixed_hit = overall_hit and has_mixed_intent(normalized_query)
+        if mixed_hit:
+            return KnowledgeSearchDecision(
+                research_base=True,
+                category="mixed",
+                reason="overall_and_rag_rule_matched",
+            )
+        if overall_hit:
+            return KnowledgeSearchDecision(
+                research_base=False,
+                category="knowledge_base_overall",
+                reason="overall_rule_matched",
+            )
         return KnowledgeSearchDecision(
             research_base=True,
-            category="knowledge_base",
+            category="normal_rag",
             reason="rule_not_matched",
         )
 
 
 class LLMKnowledgeSearchRouter:
-    prompt_template = """你是一个知识库问答系统的路由器。
-请判断用户问题是否需要检索知识库。
+    prompt_template = """你是一个知识库问答系统的前置路由器。
+请判断用户问题应该走哪一种处理方式。
 
 如果问题是以下类型，不需要检索：
 - 询问助手身份
@@ -252,10 +331,25 @@ class LLMKnowledgeSearchRouter:
 - 转人工客服
 - 明显闲聊
 
-如果问题涉及公司制度、产品文档、流程、业务知识、FAQ，则需要检索知识库。
+如果问题只是在问当前知识库的目录、文件列表、资料范围、整体概览、包含了什么数据，应输出：
+category=knowledge_base_overall
 
-请输出布尔类型数据：
-research_base=true 或者research_base=false
+如果问题是在问具体业务事实、文档内容、制度、流程、产品说明、FAQ、总结某个主题，应输出：
+category=normal_rag
+
+如果问题同时包含“知识库概览/文件列表/资料范围”和“继续检索或总结某个具体主题”的组合请求，应输出：
+category=mixed
+
+如果是无需知识库的闲聊/身份/使用说明等，应输出：
+category=llm_direct
+
+只输出一行，格式严格为：
+category=knowledge_base_overall
+或 category=normal_rag
+或 category=mixed
+或 category=llm_direct
+
+不要输出解释。
 
 用户问题：{query}
 """
@@ -279,6 +373,8 @@ research_base=true 或者research_base=false
         rule_decision = self.rule_router.decide(normalized_query)
         if not rule_decision.research_base:
             return rule_decision
+        if rule_decision.category == "mixed":
+            return rule_decision
 
         settings = get_settings()
         base_url = (
@@ -296,7 +392,7 @@ research_base=true 或者research_base=false
         if not base_url or not model:
             return KnowledgeSearchDecision(
                 research_base=True,
-                category="knowledge_base",
+                category="normal_rag",
                 reason="classifier_not_configured",
             )
 
@@ -307,7 +403,8 @@ research_base=true 或者research_base=false
                     "role": "system",
                     "content": (
                         "你是知识库检索前置分类器。你只能输出 "
-                        "research_base=true 或 research_base=false。"
+                        "category=knowledge_base_overall、category=normal_rag、"
+                        "category=mixed 或 category=llm_direct。"
                     ),
                 },
                 {"role": "user", "content": self.build_prompt(normalized_query)},
@@ -327,18 +424,16 @@ research_base=true 或者research_base=false
                     json=payload,
                 )
                 response.raise_for_status()
-            research_base = parse_research_base_output(
-                parse_chat_completion_content(response.json())
-            )
+            category = parse_knowledge_route_category(parse_chat_completion_content(response.json()))
             return KnowledgeSearchDecision(
-                research_base=research_base,
-                category="knowledge_base" if research_base else "llm_direct",
+                research_base=category in {"normal_rag", "mixed"},
+                category=category,
                 reason="classifier",
             )
         except (httpx.HTTPError, ValueError, ApiError):
             return KnowledgeSearchDecision(
                 research_base=True,
-                category="knowledge_base",
+                category="normal_rag",
                 reason="classifier_failed",
             )
 
@@ -550,6 +645,43 @@ def parse_route_decision(content: str, *, fallback_query: str) -> RouteDecision:
         raise ValueError("Router output must be a JSON object.")
     payload["query"] = str(payload.get("query") or fallback_query).strip() or fallback_query
     return RouteDecision.model_validate(payload).normalized()
+
+
+def is_overall_query(query: str) -> bool:
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return False
+    if contains_any(normalized_query, OVERALL_ACTION_KEYWORDS):
+        return True
+    if contains_any(normalized_query, OVERALL_SCOPE_KEYWORDS) and contains_any(
+        normalized_query,
+        OVERALL_WEAK_KEYWORDS,
+    ):
+        return True
+    return contains_any(normalized_query, OVERALL_WEAK_KEYWORDS) and contains_any(
+        normalized_query,
+        OVERALL_SUBJECT_KEYWORDS,
+    )
+
+
+def has_mixed_intent(query: str) -> bool:
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return False
+    return contains_any(normalized_query, MIXED_INTENT_KEYWORDS)
+
+
+def parse_knowledge_route_category(content: str) -> str:
+    normalized = content.strip().lower()
+    normalized = re.sub(r"^```(?:text)?\s*", "", normalized)
+    normalized = re.sub(r"\s*```$", "", normalized)
+    match = re.search(
+        r"(?:category\s*=\s*)?(knowledge_base_overall|normal_rag|mixed|llm_direct)",
+        normalized,
+    )
+    if match is None:
+        raise ValueError("Classifier output did not contain a known category.")
+    return match.group(1)
 
 
 def extract_json_object(content: str) -> Any:

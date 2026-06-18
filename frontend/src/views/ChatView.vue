@@ -50,7 +50,7 @@ import type {
   UserRole,
 } from '@/api/types'
 import AppLayout from '@/components/AppLayout.vue'
-import { parseMarkdownDisplayBlocks, type MarkdownDisplayBlock } from '@/utils/markdownTables'
+import MarkdownContent from '@/components/MarkdownContent.vue'
 
 interface CitationImageItem {
   key: string
@@ -728,8 +728,8 @@ function displayMessageLines(message: Message): string[] {
   return stripMarkdownImageLines(normalizeSpecialDisplayText(message.content))
 }
 
-function displayMessageBlocks(message: Message): MarkdownDisplayBlock[] {
-  return parseMarkdownDisplayBlocks(displayMessageLines(message), normalizeSpecialDisplayText)
+function displayMessageContent(message: Message): string {
+  return displayMessageLines(message).join('\n')
 }
 
 function stripMarkdownImageLines(content: string): string[] {
@@ -1301,27 +1301,10 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
               >
                 <p v-if="isWaitingMessage(message)" class="waiting-text">思考中</p>
                 <template v-else>
-                  <template v-for="block in displayMessageBlocks(message)" :key="block.key">
-                    <p v-if="block.type === 'paragraph'">{{ block.text }}</p>
-                    <div v-else class="message-table-wrap">
-                      <table class="message-table">
-                        <thead>
-                          <tr>
-                            <th v-for="(header, headerIndex) in block.headers" :key="headerIndex">
-                              {{ header }}
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
-                            <td v-for="(cell, cellIndex) in row" :key="cellIndex">
-                              {{ cell }}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </template>
+                  <MarkdownContent
+                    :content="displayMessageContent(message)"
+                    :normalize-text="normalizeSpecialDisplayText"
+                  />
                 </template>
               </article>
             </div>
@@ -2092,39 +2075,6 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
 
 .chat-bubble p:last-child {
   margin-bottom: 0;
-}
-
-.message-table-wrap {
-  max-width: 100%;
-  margin: 8px 0;
-  overflow-x: auto;
-}
-
-.message-table {
-  width: 100%;
-  min-width: 360px;
-  border-collapse: collapse;
-  font-size: 14px;
-  line-height: 1.5;
-  background: #fff;
-}
-
-.message-table th,
-.message-table td {
-  padding: 8px 10px;
-  border: 1px solid var(--ka-border);
-  text-align: left;
-  vertical-align: top;
-}
-
-.message-table th {
-  color: var(--ka-text);
-  font-weight: 700;
-  background: #f0f5f2;
-}
-
-.message-table td {
-  color: var(--ka-text-secondary);
 }
 
 .waiting-text {

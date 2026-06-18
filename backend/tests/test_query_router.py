@@ -294,7 +294,30 @@ def test_rule_based_knowledge_search_router_keeps_business_question_searchable()
     decision = RuleBasedKnowledgeSearchRouter().decide("公司的报销流程是什么？")
 
     assert decision.research_base is True
-    assert decision.category == "knowledge_base"
+    assert decision.category == "normal_rag"
+
+
+def test_rule_based_knowledge_search_router_does_not_overall_scope_only_question() -> None:
+    decision = RuleBasedKnowledgeSearchRouter().decide("这个知识库里的消防制度是什么？")
+
+    assert decision.research_base is True
+    assert decision.category == "normal_rag"
+
+
+def test_rule_based_knowledge_search_router_routes_overall_question() -> None:
+    decision = RuleBasedKnowledgeSearchRouter().decide("当前知识库都包含什么数据？")
+
+    assert decision.research_base is False
+    assert decision.category == "knowledge_base_overall"
+
+
+def test_rule_based_knowledge_search_router_routes_mixed_question() -> None:
+    decision = RuleBasedKnowledgeSearchRouter().decide(
+        "先说这个知识库有哪些资料，然后总结消防相关内容"
+    )
+
+    assert decision.research_base is True
+    assert decision.category == "mixed"
 
 
 def test_llm_knowledge_search_router_uses_classifier_false(monkeypatch: MonkeyPatch) -> None:
@@ -310,7 +333,7 @@ def test_llm_knowledge_search_router_uses_classifier_false(monkeypatch: MonkeyPa
         captured["payload"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": "research_base=false"}}]},
+            json={"choices": [{"message": {"content": "category=llm_direct"}}]},
         )
 
     try:
@@ -332,7 +355,9 @@ def test_llm_knowledge_search_router_uses_classifier_false(monkeypatch: MonkeyPa
     assert headers["authorization"] == "Bearer classifier-key"
 
 
-def test_llm_knowledge_search_router_uses_classifier_true(monkeypatch: MonkeyPatch) -> None:
+def test_llm_knowledge_search_router_uses_classifier_normal_rag(
+    monkeypatch: MonkeyPatch,
+) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_API_BASE_URL", "https://intent.example/v1")
     monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_MODEL", "qwen3.6-flash")
@@ -340,7 +365,7 @@ def test_llm_knowledge_search_router_uses_classifier_true(monkeypatch: MonkeyPat
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": "research_base=true"}}]},
+            json={"choices": [{"message": {"content": "category=normal_rag"}}]},
         )
 
     try:
@@ -351,7 +376,29 @@ def test_llm_knowledge_search_router_uses_classifier_true(monkeypatch: MonkeyPat
         get_settings.cache_clear()
 
     assert decision.research_base is True
-    assert decision.category == "knowledge_base"
+    assert decision.category == "normal_rag"
+
+
+def test_llm_knowledge_search_router_uses_classifier_mixed(monkeypatch: MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_API_BASE_URL", "https://intent.example/v1")
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_CLASSIFIER_MODEL", "qwen3.6-flash")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "category=mixed"}}]},
+        )
+
+    try:
+        decision = LLMKnowledgeSearchRouter(transport=httpx.MockTransport(handler)).decide(
+            "这个知识库有哪些资料，并总结消防相关内容"
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert decision.research_base is True
+    assert decision.category == "mixed"
 
 
 def test_llm_knowledge_search_router_falls_back_to_search_on_invalid_output(

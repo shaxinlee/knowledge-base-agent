@@ -9,6 +9,8 @@ from app.core.errors import ApiError
 from app.models import ChunkMetadata, File, FileStatus, ParseJob, ParseJobStatus
 from app.services.bm25_index import BM25ChunkDocument, BM25IndexClientProtocol
 from app.services.chunk_text import build_indexable_chunk_text
+from app.services.knowledge_overall import rebuild_knowledge_base_overall
+from app.services.object_storage import ObjectStorage, get_object_storage
 from app.services.embedding import EmbeddingClientProtocol
 from app.services.visual_citations import get_asset_paths, infer_chunk_modality
 from app.services.vector_index import VectorIndexClientProtocol
@@ -22,6 +24,7 @@ def index_parse_job(
     embedding_client: EmbeddingClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
     bm25_index_client: BM25IndexClientProtocol,
+    storage: ObjectStorage | None = None,
 ) -> None:
     chunks = db.scalars(
         select(ChunkMetadata)
@@ -117,6 +120,23 @@ def index_parse_job(
     )
     file.status = FileStatus.INDEXED.value
     db.commit()
+    try:
+        rebuild_knowledge_base_overall(
+            db,
+            knowledge_base_id=file.knowledge_base_id,
+            storage=storage or get_object_storage(),
+        )
+    except Exception as exc:
+        parse_job.logs = merge_indexing_logs(
+            parse_job.logs,
+            {
+                "overall_error": {
+                    "message": str(exc),
+                    "status": "failed_to_update_overall",
+                }
+            },
+        )
+        db.commit()
 
 
 def validate_vectors(*, vectors: list[list[float]], expected_count: int) -> None:

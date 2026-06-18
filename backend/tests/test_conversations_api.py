@@ -210,7 +210,7 @@ class FakeKnowledgeSearchRouter:
         self.requests.append(query)
         return self.decision or KnowledgeSearchDecision(
             research_base=True,
-            category="knowledge_base",
+            category="normal_rag",
             reason="test_default",
         )
 
@@ -733,6 +733,102 @@ def test_rule_direct_answer_skips_knowledge_base_retrieval() -> None:
         app.dependency_overrides.clear()
 
 
+def test_overall_question_reads_knowledge_base_overall_without_similarity_search() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, _chunk_id = _seed_indexed_chunk(session_factory)
+    overall_key = f"knowledge-bases/{knowledge_base_id}/overall.md"
+    with session_factory() as db:
+        knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+        assert knowledge_base is not None
+        knowledge_base.settings = {
+            "overall": {
+                "bucket": "normalized-docs",
+                "key": overall_key,
+                "generated_at": "2026-06-17T00:00:00+00:00",
+                "file_count": 1,
+                "indexed_file_count": 1,
+            }
+        }
+        db.commit()
+
+    storage = FakeObjectStorage()
+    storage.put_object(
+        bucket="normalized-docs",
+        key=overall_key,
+        data=(
+            "# Chat KB 知识库概览\n\n"
+            "- 文件总数：1\n\n"
+            "## 文件清单与大概描述\n\n"
+            "### 1. chat.txt\n"
+            "- 大概描述：用于聊天测试的资料。\n"
+        ).encode(),
+        content_type="text/markdown; charset=utf-8",
+        metadata={},
+    )
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(hits=[])
+    reranker_client = FakeRerankerClient()
+    bm25_index_client = FakeBM25IndexClient(enabled=True)
+    llm_client = FakeLLMClient()
+    knowledge_search_router = FakeKnowledgeSearchRouter(
+        KnowledgeSearchDecision(
+            research_base=False,
+            category="knowledge_base_overall",
+            reason="test_overall",
+        )
+    )
+    query_router = FakeQueryRouter()
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+        bm25_index_client,
+        knowledge_search_router,
+        query_router,
+        object_storage=storage,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Overall Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "当前知识库都包含什么数据？", "stream": False},
+        )
+        assert message_response.status_code == 200
+        assistant = message_response.json()["assistant_message"]
+        assert "Chat KB 知识库概览" in assistant["content"]
+        assert "chat.txt" in assistant["content"]
+        assert assistant["citations"] == []
+        assert embedding_client.requests == []
+        assert vector_index_client.searches == []
+        assert reranker_client.requests == []
+        assert bm25_index_client.searches == []
+        assert llm_client.requests == []
+        assert knowledge_search_router.requests == ["当前知识库都包含什么数据？"]
+        assert query_router.requests == []
+
+        with session_factory() as db:
+            trace = db.scalar(select(MessageTrace))
+        assert trace is not None
+        assert trace.chat_model == "knowledge-overall"
+        assert trace.prompt_version == "knowledge-overall-v1"
+        assert trace.retrieved_chunk_ids == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_classifier_non_research_uses_direct_llm_without_retrieval() -> None:
     session_factory = _make_session_factory()
     knowledge_base_id = _seed_empty_knowledge_base(session_factory)
@@ -780,6 +876,99 @@ def test_classifier_non_research_uses_direct_llm_without_retrieval() -> None:
         assert embedding_client.requests == []
         assert vector_index_client.searches == []
         assert reranker_client.requests == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mixed_question_uses_overall_context_and_normal_rag() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, chunk_id = _seed_indexed_chunk(session_factory)
+    overall_key = f"knowledge-bases/{knowledge_base_id}/overall.md"
+    with session_factory() as db:
+        knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+        assert knowledge_base is not None
+        knowledge_base.settings = {
+            "overall": {
+                "bucket": "normalized-docs",
+                "key": overall_key,
+                "generated_at": "2026-06-17T00:00:00+00:00",
+                "file_count": 1,
+                "indexed_file_count": 1,
+            }
+        }
+        db.commit()
+
+    storage = FakeObjectStorage()
+    storage.put_object(
+        bucket="normalized-docs",
+        key=overall_key,
+        data="# Chat KB 知识库概览\n\n- 文件总数：1\n".encode(),
+        content_type="text/markdown; charset=utf-8",
+        metadata={},
+    )
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(
+        hits=[
+            VectorSearchHit(
+                point_id=str(chunk_id),
+                score=0.9,
+                payload={"chunk_id": str(chunk_id), "knowledge_base_id": str(knowledge_base_id)},
+            )
+        ]
+    )
+    reranker_client = FakeRerankerClient(scores=[0.75])
+    llm_client = FakeLLMClient()
+    knowledge_search_router = FakeKnowledgeSearchRouter(
+        KnowledgeSearchDecision(research_base=True, category="mixed", reason="test_mixed")
+    )
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        llm_client,
+        knowledge_search_router=knowledge_search_router,
+        object_storage=storage,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Mixed Chat"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={
+                "content": "先说这个知识库有哪些资料，然后总结 demo answer",
+                "stream": False,
+            },
+        )
+        assert message_response.status_code == 200
+        assistant = message_response.json()["assistant_message"]
+        assert assistant["citations"][0]["chunk_id"] == str(chunk_id)
+        assert len(llm_client.requests) == 1
+        contexts = llm_client.requests[0]["contexts"]
+        assert contexts[0].file_name == "knowledge-base-overall.md"
+        assert "Chat KB 知识库概览" in contexts[0].excerpt
+        assert contexts[1].chunk_id == str(chunk_id)
+        assert embedding_client.requests
+        assert vector_index_client.searches
+        assert reranker_client.requests
+
+        with session_factory() as db:
+            trace = db.scalar(select(MessageTrace))
+        assert trace is not None
+        assert trace.final_context_chunk_ids is not None
+        assert trace.final_cited_chunk_ids is not None
+        assert trace.final_context_chunk_ids[0] == "00000000-0000-0000-0000-000000000000"
+        assert trace.final_cited_chunk_ids == [str(chunk_id)]
     finally:
         app.dependency_overrides.clear()
 
@@ -1216,6 +1405,93 @@ def test_stream_rule_direct_answer_returns_zero_retrieval_events() -> None:
         assert citation is None
         assert trace is not None
         assert trace.final_context_chunk_ids == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_stream_overall_question_reads_overall_without_similarity_search() -> None:
+    session_factory = _make_session_factory()
+    knowledge_base_id, _chunk_id = _seed_indexed_chunk(session_factory)
+    overall_key = f"knowledge-bases/{knowledge_base_id}/overall.md"
+    with session_factory() as db:
+        knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+        assert knowledge_base is not None
+        knowledge_base.settings = {
+            "overall": {
+                "bucket": "normalized-docs",
+                "key": overall_key,
+                "generated_at": "2026-06-17T00:00:00+00:00",
+                "file_count": 1,
+                "indexed_file_count": 1,
+            }
+        }
+        db.commit()
+
+    storage = FakeObjectStorage()
+    storage.put_object(
+        bucket="normalized-docs",
+        key=overall_key,
+        data="# Chat KB 知识库概览\n\n- 文件总数：1\n".encode(),
+        content_type="text/markdown; charset=utf-8",
+        metadata={},
+    )
+    embedding_client = FakeEmbeddingClient()
+    vector_index_client = FakeVectorIndexClient(hits=[])
+    reranker_client = FakeRerankerClient()
+    bm25_index_client = FakeBM25IndexClient(enabled=True)
+    knowledge_search_router = FakeKnowledgeSearchRouter(
+        KnowledgeSearchDecision(
+            research_base=False,
+            category="knowledge_base_overall",
+            reason="test_overall",
+        )
+    )
+    query_router = FakeQueryRouter()
+    _install_overrides(
+        session_factory,
+        embedding_client,
+        vector_index_client,
+        reranker_client,
+        bm25_index_client=bm25_index_client,
+        knowledge_search_router=knowledge_search_router,
+        query_router=query_router,
+        object_storage=storage,
+    )
+    try:
+        client = TestClient(app)
+        token = _login(client, "reader", "ReaderPassword123")
+
+        create_response = client.post(
+            "/api/v1/conversations",
+            headers=_headers(token),
+            json={"knowledge_base_id": str(knowledge_base_id), "title": "Stream Overall"},
+        )
+        assert create_response.status_code == 201
+        conversation_id = create_response.json()["id"]
+
+        message_response = client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            headers=_headers(token),
+            json={"content": "这个知识库有哪些资料？", "stream": True},
+        )
+        assert message_response.status_code == 200
+        text = message_response.text
+        assert "event: retrieval" in text
+        assert '"retrieved_count": 0' in text
+        assert "Chat KB 知识库概览" in text
+        assert '"citations": []' in text
+        assert embedding_client.requests == []
+        assert vector_index_client.searches == []
+        assert reranker_client.requests == []
+        assert bm25_index_client.searches == []
+        assert knowledge_search_router.requests == ["这个知识库有哪些资料？"]
+        assert query_router.requests == []
+
+        with session_factory() as db:
+            trace = db.scalar(select(MessageTrace))
+        assert trace is not None
+        assert trace.chat_model == "knowledge-overall"
+        assert trace.prompt_version == "knowledge-overall-v1"
     finally:
         app.dependency_overrides.clear()
 

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,8 +29,15 @@ class Settings(BaseSettings):
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "change-me"
     minio_secure: bool = False
-    raw_files_bucket: str = "raw-files"
-    parsed_results_bucket: str = "parsed-results"
+    raw_files_bucket: str = Field(default="raw-files", validation_alias="MINIO_BUCKET_RAW_FILES")
+    parsed_results_bucket: str = Field(
+        default="parsed-results",
+        validation_alias="MINIO_BUCKET_PARSED_RESULTS",
+    )
+    normalized_docs_bucket: str = Field(
+        default="normalized-docs",
+        validation_alias="MINIO_BUCKET_NORMALIZED_DOCS",
+    )
     message_attachments_bucket: str = "message-attachments"
     max_message_attachment_size_mb: int = 8
     mineru_api_base_url: str = "https://mineru.net"
