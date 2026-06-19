@@ -256,12 +256,7 @@ function initializeResizableLayout(): void {
   applyAppSidebarWidth()
 }
 
-function readStoredNumber(
-  key: string,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
+function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
   const value = Number(window.localStorage.getItem(key))
   if (!Number.isFinite(value)) {
     return fallback
@@ -535,7 +530,7 @@ async function sendMessage(): Promise<void> {
           streamingAssistantMessageId.value = ''
           const assistantMessage = messages.value.find((message) => message.id === event.message_id)
           selectedCitation.value = assistantMessage
-            ? visibleMessageCitations(assistantMessage)[0] ?? null
+            ? (visibleMessageCitations(assistantMessage)[0] ?? null)
             : null
           void preloadCitationImages()
           void scrollToBottom()
@@ -681,7 +676,10 @@ function handleError(error: unknown): void {
 function resolveInitialKnowledgeBaseId(): string {
   const queryKnowledgeBaseId =
     typeof route.query.knowledge_base_id === 'string' ? route.query.knowledge_base_id : ''
-  if (queryKnowledgeBaseId && knowledgeBases.value.some((item) => item.id === queryKnowledgeBaseId)) {
+  if (
+    queryKnowledgeBaseId &&
+    knowledgeBases.value.some((item) => item.id === queryKnowledgeBaseId)
+  ) {
     return queryKnowledgeBaseId
   }
   return knowledgeBases.value[0]?.id ?? ''
@@ -860,7 +858,9 @@ function messageImageItems(message: Message): CitationImageItem[] {
   }
   if (message.visual_result_mode === 'gallery') {
     return message.citations
-      .filter((citation) => citation.modality === 'image' && citationPrimaryImageSourceUrl(citation))
+      .filter(
+        (citation) => citation.modality === 'image' && citationPrimaryImageSourceUrl(citation),
+      )
       .slice(0, IMAGE_GALLERY_LIMIT)
       .map((citation) => {
         const sourceUrl = citationPrimaryImageSourceUrl(citation)
@@ -1950,6 +1950,7 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  min-height: 0;
   padding: 34px 32px 16px;
   overflow: hidden;
   border-right: 1px solid var(--ka-border);
@@ -1957,9 +1958,9 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
 }
 
 .messages {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: calc(100vh - var(--ka-header-height) - 240px);
+  max-height: none;
   overflow: auto;
   padding: 14px 18px 28px;
 }
@@ -2269,6 +2270,7 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
 }
 
 .composer {
+  flex: 0 0 auto;
   width: min(100%, 960px);
   min-height: 146px;
   margin: 0 auto;

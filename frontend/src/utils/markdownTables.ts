@@ -1,10 +1,15 @@
 export type MarkdownDisplayBlock =
   | { type: 'paragraph'; key: string; text: string }
   | { type: 'heading'; key: string; level: number; text: string }
-  | { type: 'list'; key: string; items: string[] }
+  | { type: 'list'; key: string; items: string[]; ordered: boolean }
   | { type: 'quote'; key: string; lines: string[] }
   | { type: 'code'; key: string; code: string; language: string }
   | { type: 'table'; key: string; headers: string[]; rows: string[][] }
+
+interface ListItem {
+  text: string
+  ordered: boolean
+}
 
 interface TableRowCandidate {
   prefix: string
@@ -91,17 +96,22 @@ export function parseMarkdownDisplayBlocks(
 
     const listItem = parseListItem(lines[index], normalizeText)
     if (listItem) {
-      const items = [listItem]
+      const items = [listItem.text]
       index += 1
       while (index < lines.length) {
         const item = parseListItem(lines[index], normalizeText)
-        if (!item) {
+        if (!item || item.ordered !== listItem.ordered) {
           break
         }
-        items.push(item)
+        items.push(item.text)
         index += 1
       }
-      blocks.push({ type: 'list', key: `list-${index}-${blocks.length}`, items })
+      blocks.push({
+        type: 'list',
+        key: `list-${index}-${blocks.length}`,
+        items,
+        ordered: listItem.ordered,
+      })
       continue
     }
 
@@ -152,12 +162,15 @@ function parseHeading(
   }
 }
 
-function parseListItem(line: string, normalizeText: (content: string) => string): string | null {
-  const match = /^\s*(?:[-*+]|\d+[.)])\s+(.+)$/.exec(line)
+function parseListItem(line: string, normalizeText: (content: string) => string): ListItem | null {
+  const match = /^\s*(?:(?<bullet>[-*+])\s+|(?<ordered>\d+[.)])\s*)(.+)$/.exec(line)
   if (!match) {
     return null
   }
-  return normalizeText(match[1])
+  return {
+    text: normalizeText(match[3]),
+    ordered: Boolean(match.groups?.ordered),
+  }
 }
 
 function parseQuoteLine(line: string, normalizeText: (content: string) => string): string | null {
@@ -193,7 +206,9 @@ function isMarkdownTableRow(line: string): boolean {
 
 function isMarkdownTableSeparator(line: string): boolean {
   const cells = splitMarkdownTableRow(line)
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim().replace(/\s+/g, '')))
+  return (
+    cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim().replace(/\s+/g, '')))
+  )
 }
 
 function parseMarkdownTable(
