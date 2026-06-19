@@ -20,8 +20,10 @@ import type {
   LoginResponse,
   MessageCreateRequest,
   MessageCreateResponse,
+  ModelSettings,
   PaginatedResponse,
   KnowledgeBase,
+  KnowledgeBasePublicSummary,
   KnowledgeBaseUpdateRequest,
   LogoutRequest,
   ParseJob,
@@ -171,6 +173,17 @@ export async function updateAssistantProfile(
   })
 }
 
+export async function getModelSettings(): Promise<ModelSettings> {
+  return apiRequest<ModelSettings>('/model-settings')
+}
+
+export async function updateModelSettings(payload: ModelSettings): Promise<ModelSettings> {
+  return apiRequest<ModelSettings>('/model-settings', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function listKnowledgeBases(
   query: KnowledgeBaseListQuery = {},
 ): Promise<PaginatedResponse<KnowledgeBase>> {
@@ -184,6 +197,12 @@ export async function listKnowledgeBases(
     params.set('status', query.status)
   }
   return apiRequest<PaginatedResponse<KnowledgeBase>>(`/knowledge-bases?${params.toString()}`)
+}
+
+export async function getKnowledgeBasePublicSummary(): Promise<KnowledgeBasePublicSummary> {
+  return apiRequest<KnowledgeBasePublicSummary>('/knowledge-bases/public-summary', {
+    skipAuth: true,
+  })
 }
 
 export async function createKnowledgeBase(

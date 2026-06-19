@@ -7,6 +7,7 @@ from app.core.config import get_settings
 from app.core.errors import ApiError
 from app.rag.embeddings.base import EmbeddingRequest
 from app.rag.embeddings.qwen_multimodal import QwenMultimodalEmbeddingProvider
+from app.services.model_settings import get_model_settings
 
 
 class EmbeddingClientProtocol(Protocol):
@@ -201,26 +202,34 @@ def invalid_vector_error() -> ApiError:
 
 def get_embedding_client() -> EmbeddingClientProtocol:
     settings = get_settings()
+    model_settings = get_model_settings()
+    text_settings = model_settings.text_embedding
+    multimodal_settings = model_settings.multimodal_embedding
+    embedding_model = text_settings.model.strip() or settings.embedding_model
+    embedding_base_url = text_settings.base_url.strip()
+    embedding_api_key = text_settings.api_key or settings.embedding_api_key
     if settings.demo_fixture_enabled:
         return LocalDemoEmbeddingClient()
-    if should_use_qwen_multimodal_embedding(settings.embedding_model):
+    if should_use_qwen_multimodal_embedding(embedding_model):
         return QwenMultimodalTextEmbeddingClient(
             provider=QwenMultimodalEmbeddingProvider(
-                model_name=settings.embedding_model or settings.qwen_embedding_model,
-                api_key=settings.qwen_api_key or settings.embedding_api_key,
-                base_url=settings.qwen_base_url,
+                model_name=embedding_model
+                or multimodal_settings.model
+                or settings.qwen_embedding_model,
+                api_key=multimodal_settings.api_key or settings.qwen_api_key or embedding_api_key,
+                base_url=multimodal_settings.base_url or settings.qwen_base_url,
             )
         )
-    if settings.embedding_api_base_url.strip():
+    if embedding_base_url and embedding_base_url != settings.embedding_service_url:
         return EmbeddingClient(
-            base_url=settings.embedding_api_base_url,
-            model=settings.embedding_model,
-            api_key=settings.embedding_api_key,
+            base_url=embedding_base_url,
+            model=embedding_model,
+            api_key=embedding_api_key,
             api_mode=True,
         )
     return EmbeddingClient(
-        base_url=settings.embedding_service_url,
-        model=settings.embedding_model,
+        base_url=embedding_base_url or settings.embedding_service_url,
+        model=embedding_model,
     )
 
 

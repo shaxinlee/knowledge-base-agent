@@ -9,6 +9,7 @@ from app.models import KnowledgeBaseStatus, User
 from app.schemas.knowledge_bases import (
     KnowledgeBaseCreateRequest,
     KnowledgeBaseListResponse,
+    KnowledgeBasePublicSummaryResponse,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdateRequest,
 )
@@ -16,11 +17,19 @@ from app.services.knowledge_bases import (
     create_knowledge_base,
     delete_knowledge_base,
     get_knowledge_base,
+    get_public_knowledge_base_summary,
     list_knowledge_bases,
     update_knowledge_base,
 )
 
 router = APIRouter(prefix="/knowledge-bases", tags=["KnowledgeBases"])
+
+
+@router.get("/public-summary", response_model=KnowledgeBasePublicSummaryResponse)
+def read_knowledge_base_public_summary(
+    db: Session = Depends(get_db),
+) -> KnowledgeBasePublicSummaryResponse:
+    return get_public_knowledge_base_summary(db)
 
 
 @router.get("", response_model=KnowledgeBaseListResponse)

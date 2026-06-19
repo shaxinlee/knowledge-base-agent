@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -126,4 +127,86 @@ def test_non_admin_cannot_update_assistant_profile(tmp_path) -> None:
         assert response.status_code == 403
     finally:
         settings.assistant_profile_config_path = original_path
+        app.dependency_overrides.clear()
+
+
+def test_admin_can_read_and_update_model_settings(tmp_path) -> None:
+    session_factory = _make_session_factory()
+    _seed_admin_and_user(session_factory)
+    settings = get_settings()
+    original_path = settings.model_settings_config_path
+    config_path = tmp_path / "model_settings.json"
+    settings.model_settings_config_path = str(config_path)
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+        admin_token = _login(client, "admin", "AdminPassword123")
+
+        read_response = client.get("/api/v1/model-settings", headers=_headers(admin_token))
+        assert read_response.status_code == 200
+        payload = read_response.json()
+        assert payload["text_embedding"]["model"] == "bge-m3"
+        assert payload["reranker"]["model"] == "bge-reranker"
+
+        payload["llm"] = {
+            "base_url": "https://llm.example.test/v1",
+            "api_key": "test-llm-key",
+            "model": "qwen-test",
+        }
+        payload["text_embedding"] = {
+            "base_url": "https://embedding.example.test/v1",
+            "api_key": "test-embedding-key",
+            "model": "bge-m3-test",
+        }
+        update_response = client.patch(
+            "/api/v1/model-settings",
+            headers=_headers(admin_token),
+            json=payload,
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["llm"]["model"] == "qwen-test"
+
+        saved_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved_payload["llm"]["api_key"] == "test-llm-key"
+        assert saved_payload["text_embedding"]["base_url"] == "https://embedding.example.test/v1"
+    finally:
+        settings.model_settings_config_path = original_path
+        app.dependency_overrides.clear()
+
+
+def test_non_admin_cannot_update_model_settings(tmp_path) -> None:
+    session_factory = _make_session_factory()
+    _seed_admin_and_user(session_factory)
+    settings = get_settings()
+    original_path = settings.model_settings_config_path
+    settings.model_settings_config_path = str(tmp_path / "model_settings.json")
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+        user_token = _login(client, "reader", "ReaderPassword123")
+        response = client.patch(
+            "/api/v1/model-settings",
+            headers=_headers(user_token),
+            json={
+                "mineru": {"base_url": "", "api_key": "", "model": ""},
+                "llm": {"base_url": "", "api_key": "", "model": ""},
+                "text_embedding": {"base_url": "", "api_key": "", "model": ""},
+                "reranker": {"base_url": "", "api_key": "", "model": ""},
+                "intent_recognition": {"base_url": "", "api_key": "", "model": ""},
+                "knowledge_search_classifier": {"base_url": "", "api_key": "", "model": ""},
+                "image_description": {"base_url": "", "api_key": "", "model": ""},
+                "multimodal_embedding": {"base_url": "", "api_key": "", "model": ""},
+            },
+        )
+        assert response.status_code == 403
+    finally:
+        settings.model_settings_config_path = original_path
         app.dependency_overrides.clear()

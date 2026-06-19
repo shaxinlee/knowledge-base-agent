@@ -132,6 +132,23 @@ export interface AssistantProfile {
   fallback_casual_answer: string
 }
 
+export interface ModelEndpointSettings {
+  base_url: string
+  api_key: string
+  model: string
+}
+
+export interface ModelSettings {
+  mineru: ModelEndpointSettings
+  llm: ModelEndpointSettings
+  text_embedding: ModelEndpointSettings
+  reranker: ModelEndpointSettings
+  intent_recognition: ModelEndpointSettings
+  knowledge_search_classifier: ModelEndpointSettings
+  image_description: ModelEndpointSettings
+  multimodal_embedding: ModelEndpointSettings
+}
+
 export interface KnowledgeBase {
   id: string
   name: string
@@ -142,6 +159,11 @@ export interface KnowledgeBase {
   created_by: string
   created_at: string
   updated_at: string
+}
+
+export interface KnowledgeBasePublicSummary {
+  active_count: number
+  deployment_day: number
 }
 
 export interface KnowledgeBaseCreateRequest {

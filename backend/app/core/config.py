@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     knowledge_search_classifier_temperature: float = 0.0
     knowledge_search_classifier_max_tokens: int = 32
     assistant_profile_config_path: str = "app/config/assistant_profile.json"
+    model_settings_config_path: str = "app/config/model_settings.json"
     image_description_enabled: bool = True
     image_description_api_base_url: str = ""
     image_description_api_key: str = ""

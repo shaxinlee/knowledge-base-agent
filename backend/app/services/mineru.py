@@ -5,6 +5,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.errors import ApiError
+from app.services.model_settings import get_model_settings
 
 
 @dataclass(frozen=True)
@@ -37,12 +38,14 @@ class MineruApiClient:
         content: bytes,
     ) -> MineruSubmission:
         settings = get_settings()
+        model_settings = get_model_settings()
+        mineru_settings = model_settings.mineru
         token = require_mineru_token()
         payload = {
             "enable_formula": settings.mineru_enable_formula,
             "enable_table": settings.mineru_enable_table,
             "language": settings.mineru_language,
-            "model_version": settings.mineru_model_version,
+            "model_version": mineru_settings.model or settings.mineru_model_version,
             "files": [
                 {
                     "name": file_name,
@@ -101,7 +104,9 @@ def get_mineru_client() -> MineruClient:
 
 def build_mineru_url(path: str) -> str:
     settings = get_settings()
-    return f"{settings.mineru_api_base_url.rstrip('/')}/{path.lstrip('/')}"
+    model_settings = get_model_settings()
+    base_url = model_settings.mineru.base_url or settings.mineru_api_base_url
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 def build_auth_headers(token: str) -> dict[str, str]:
@@ -113,7 +118,7 @@ def build_auth_headers(token: str) -> dict[str, str]:
 
 
 def require_mineru_token() -> str:
-    token = get_settings().mineru_api_token.strip()
+    token = (get_model_settings().mineru.api_key or get_settings().mineru_api_token).strip()
     if not token:
         raise_upstream_error("MinerU API token is not configured.")
     return token

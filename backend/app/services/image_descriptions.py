@@ -16,6 +16,7 @@ from app.services.llm import (
     build_llm_headers,
     parse_chat_completion_content,
 )
+from app.services.model_settings import get_model_settings
 from app.services.object_storage import ObjectStorage
 from app.services.visual_citations import get_asset_paths
 
@@ -339,20 +340,31 @@ def merge_image_description_logs(
 
 def get_image_description_client() -> ImageDescriptionClientProtocol:
     settings = get_settings()
+    model_settings = get_model_settings()
+    image_settings = model_settings.image_description
+    llm_settings = model_settings.llm
     if not settings.image_description_enabled:
         return DisabledImageDescriptionClient()
     base_url = (
-        settings.image_description_api_base_url.strip()
+        image_settings.base_url.strip()
+        or llm_settings.base_url.strip()
+        or settings.image_description_api_base_url.strip()
         or settings.llm_api_base_url.strip()
         or settings.llm_api_base.strip()
     )
-    if not base_url or not settings.image_description_model.strip():
+    model = image_settings.model.strip() or settings.image_description_model.strip()
+    if not base_url or not model:
         return DisabledImageDescriptionClient()
-    api_key = settings.image_description_api_key or settings.llm_api_key
+    api_key = (
+        image_settings.api_key
+        or llm_settings.api_key
+        or settings.image_description_api_key
+        or settings.llm_api_key
+    )
     return OpenAIVisionImageDescriptionClient(
         base_url=base_url,
         api_key=api_key,
-        model=settings.image_description_model,
+        model=model,
         timeout_seconds=settings.image_description_timeout_seconds,
         temperature=settings.image_description_temperature,
         max_tokens=settings.image_description_max_tokens,

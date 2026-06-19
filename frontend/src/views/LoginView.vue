@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { Hide, View } from '@element-plus/icons-vue'
+import { Sprout } from '@lucide/vue'
 import { ElButton, ElCheckbox, ElIcon, ElInput, ElOption, ElSelect } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
   createConsumerSession,
+  getKnowledgeBasePublicSummary,
   listConsumerUsers,
   login as loginRequest,
   saveAuthTokens,
 } from '@/api/client'
 import type { ConsumerUserOption, UserRole } from '@/api/types'
+import cyberPickleJarLogo from '@/assets/cyber-pickle-jar-logo.png'
 
 type LoginMode = 'admin' | 'user'
 
@@ -33,6 +36,8 @@ const rememberLogin = ref(true)
 const loading = ref(false)
 const loadingUserOptions = ref(false)
 const errorMessage = ref('')
+const deploymentDay = ref(1)
+const knowledgeBaseCount = ref(0)
 
 const mouseX = ref(0)
 const mouseY = ref(0)
@@ -195,6 +200,7 @@ onMounted(() => {
   window.addEventListener('mousemove', handleMouseMove)
   scheduleBlink('purple')
   scheduleBlink('black')
+  void loadPublicSummary()
 })
 
 onBeforeUnmount(() => {
@@ -299,6 +305,17 @@ async function loadConsumerUsers(): Promise<void> {
   }
 }
 
+async function loadPublicSummary(): Promise<void> {
+  try {
+    const summary = await getKnowledgeBasePublicSummary()
+    deploymentDay.value = Math.max(summary.deployment_day, 1)
+    knowledgeBaseCount.value = Math.max(summary.active_count, 0)
+  } catch {
+    deploymentDay.value = 1
+    knowledgeBaseCount.value = 0
+  }
+}
+
 function resolvePostLoginPath(role: UserRole): string {
   const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
   if (role === 'admin') {
@@ -395,8 +412,8 @@ function clearPeekTimers(): void {
   <main class="login-page">
     <section class="login-visual" aria-hidden="true">
       <div class="visual-brand">
-        <div class="spark-mark">KB</div>
-        <span>知识库 Agent</span>
+        <img class="brand-logo" :src="cyberPickleJarLogo" alt="" />
+        <span>赛博腌菜缸</span>
       </div>
 
       <div class="character-stage">
@@ -463,14 +480,24 @@ function clearPeekTimers(): void {
 
     <section class="login-panel" aria-labelledby="login-title">
       <div class="mobile-brand">
-        <div class="spark-mark">KB</div>
-        <span>知识库 Agent</span>
+        <img class="brand-logo" :src="cyberPickleJarLogo" alt="" />
+        <span>赛博腌菜缸</span>
       </div>
 
       <div class="login-shell">
         <header class="login-header">
-          <p>欢迎回来</p>
-          <h1 id="login-title">登录知识库 Agent 助手</h1>
+          <p class="pickle-tagline">
+            <img class="tagline-icon" :src="cyberPickleJarLogo" alt="" />
+            <span>腌菜第 {{ deploymentDay }} 天，缸体无裂，知识未发酵</span>
+          </p>
+          <span class="pickle-count">共{{ knowledgeBaseCount }}缸菜</span>
+          <h1 id="login-title">
+            <Sprout class="title-icon" aria-hidden="true" />
+            <span class="title-copy">
+              <span>今日宜：取菜</span>
+              <span>（但请先确认没过期）</span>
+            </span>
+          </h1>
         </header>
 
         <div class="mode-switch" role="group" aria-label="选择登录角色">
@@ -623,24 +650,24 @@ function clearPeekTimers(): void {
   position: relative;
   z-index: 2;
   display: inline-flex;
-  gap: 12px;
+  gap: 14px;
   align-items: center;
-  font-size: 18px;
+  color: #f8fffb;
+  font-size: 28px;
   font-weight: 800;
 }
 
-.spark-mark {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 24%);
-  border-radius: 8px;
-  color: #fff;
-  background: rgb(255 255 255 / 12%);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 20%);
-  font-size: 14px;
-  letter-spacing: 0;
+.brand-logo {
+  width: 54px;
+  height: 54px;
+  flex: 0 0 auto;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 14%);
+  box-shadow:
+    0 12px 28px rgb(5 32 29 / 16%),
+    inset 0 1px 0 rgb(255 255 255 / 22%);
+  object-fit: cover;
 }
 
 .character-stage {
@@ -820,10 +847,10 @@ function clearPeekTimers(): void {
   color: var(--ka-primary-deep);
 }
 
-.mobile-brand .spark-mark {
+.mobile-brand .brand-logo {
   border-color: rgb(15 118 110 / 18%);
-  color: var(--ka-primary-deep);
   background: var(--ka-primary-soft);
+  box-shadow: 0 10px 24px rgb(15 118 110 / 13%);
 }
 
 .login-shell {
@@ -836,19 +863,68 @@ function clearPeekTimers(): void {
 }
 
 .login-header p {
-  margin: 0 0 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
   color: var(--ka-primary);
-  font-size: 14px;
-  font-weight: 800;
+  font-size: 23px;
+  font-weight: 750;
+  line-height: 32px;
+}
+
+.tagline-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+.pickle-count {
+  display: block;
+  margin-bottom: 18px;
+  color: var(--ka-text-secondary);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 30px;
 }
 
 .login-header h1 {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 10px;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 48px));
   margin: 0;
+  margin-inline: auto;
   color: var(--ka-text);
-  font-size: 30px;
+  font-size: 40px;
   font-weight: 800;
-  line-height: 38px;
+  line-height: 50px;
   letter-spacing: 0;
+}
+
+.title-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  color: var(--ka-primary);
+  stroke-width: 2.4;
+}
+
+.title-copy {
+  display: grid;
+  justify-items: center;
+  min-width: 0;
+}
+
+.title-copy span {
+  display: block;
+  white-space: nowrap;
 }
 
 .mode-switch {
@@ -980,8 +1056,26 @@ function clearPeekTimers(): void {
   }
 
   .login-header h1 {
-    font-size: 24px;
-    line-height: 32px;
+    max-width: calc(100vw - 44px);
+    margin-inline: auto;
+    font-size: 30px;
+    line-height: 38px;
+  }
+
+  .login-header p {
+    max-width: 320px;
+    margin-inline: auto;
+  }
+
+  .tagline-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .title-icon {
+    width: 32px;
+    height: 32px;
+    margin-top: 3px;
   }
 
   .mode-switch {

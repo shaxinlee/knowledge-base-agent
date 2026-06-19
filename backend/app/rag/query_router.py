@@ -12,6 +12,7 @@ from app.services.llm import (
     build_llm_headers,
     parse_chat_completion_content,
 )
+from app.services.model_settings import get_model_settings
 
 Modality = Literal["text", "table", "image", "metadata"]
 VisualResultMode = Literal["none", "single", "gallery"]
@@ -377,18 +378,32 @@ category=knowledge_base_overall
             return rule_decision
 
         settings = get_settings()
+        model_settings = get_model_settings()
+        classifier_settings = model_settings.knowledge_search_classifier
+        intent_settings = model_settings.intent_recognition
+        llm_settings = model_settings.llm
         base_url = (
-            settings.knowledge_search_classifier_api_base_url.strip()
+            classifier_settings.base_url.strip()
+            or intent_settings.base_url.strip()
+            or llm_settings.base_url.strip()
+            or settings.knowledge_search_classifier_api_base_url.strip()
             or settings.intent_recognition_api_base_url.strip()
             or settings.llm_api_base_url.strip()
             or settings.llm_api_base.strip()
         )
         api_key = (
-            settings.knowledge_search_classifier_api_key
+            classifier_settings.api_key
+            or intent_settings.api_key
+            or llm_settings.api_key
+            or settings.knowledge_search_classifier_api_key
             or settings.intent_recognition_api_key
             or settings.llm_api_key
         )
-        model = settings.knowledge_search_classifier_model.strip() or "qwen3.6-flash"
+        model = (
+            classifier_settings.model.strip()
+            or settings.knowledge_search_classifier_model.strip()
+            or "qwen3.6-flash"
+        )
         if not base_url or not model:
             return KnowledgeSearchDecision(
                 research_base=True,
@@ -595,13 +610,28 @@ class LLMQueryRouter:
             )
 
         settings = get_settings()
+        model_settings = get_model_settings()
+        intent_settings = model_settings.intent_recognition
+        llm_settings = model_settings.llm
         base_url = (
-            settings.intent_recognition_api_base_url.strip()
+            intent_settings.base_url.strip()
+            or llm_settings.base_url.strip()
+            or settings.intent_recognition_api_base_url.strip()
             or settings.llm_api_base_url.strip()
             or settings.llm_api_base.strip()
         )
-        api_key = settings.intent_recognition_api_key or settings.llm_api_key
-        model = settings.intent_recognition_model.strip() or settings.llm_model.strip()
+        api_key = (
+            intent_settings.api_key
+            or llm_settings.api_key
+            or settings.intent_recognition_api_key
+            or settings.llm_api_key
+        )
+        model = (
+            intent_settings.model.strip()
+            or settings.intent_recognition_model.strip()
+            or llm_settings.model.strip()
+            or settings.llm_model.strip()
+        )
         if not base_url or not model:
             return RuleBasedQueryRouter().route(normalized_query)
 

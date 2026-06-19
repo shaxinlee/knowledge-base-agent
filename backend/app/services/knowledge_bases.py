@@ -11,6 +11,7 @@ from app.models import ChunkMetadata, File, KnowledgeBase, KnowledgeBaseStatus, 
 from app.schemas.knowledge_bases import (
     KnowledgeBaseCreateRequest,
     KnowledgeBaseListResponse,
+    KnowledgeBasePublicSummaryResponse,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdateRequest,
 )
@@ -66,6 +67,27 @@ def list_knowledge_bases(
         total=total,
         page=normalized_page,
         page_size=normalized_page_size,
+    )
+
+
+def get_public_knowledge_base_summary(db: Session) -> KnowledgeBasePublicSummaryResponse:
+    active_filters = (
+        KnowledgeBase.status == KnowledgeBaseStatus.ACTIVE.value,
+        KnowledgeBase.deleted_at.is_(None),
+    )
+    active_count = int(
+        db.scalar(select(func.count()).select_from(KnowledgeBase).where(*active_filters)) or 0
+    )
+    earliest_created_at = db.scalar(select(func.min(KnowledgeBase.created_at)).where(*active_filters))
+    deployment_day = 1
+    if earliest_created_at is not None:
+        now = datetime.now(UTC)
+        if earliest_created_at.tzinfo is None:
+            earliest_created_at = earliest_created_at.replace(tzinfo=UTC)
+        deployment_day = max((now.date() - earliest_created_at.date()).days + 1, 1)
+    return KnowledgeBasePublicSummaryResponse(
+        active_count=active_count,
+        deployment_day=deployment_day,
     )
 
 

@@ -6,6 +6,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.errors import ApiError
+from app.services.model_settings import get_model_settings
 
 
 class RerankerClientProtocol(Protocol):
@@ -235,24 +236,28 @@ def parse_indexed_scores(results: list[Any], *, expected_count: int) -> list[flo
 
 def get_reranker_client() -> RerankerClientProtocol:
     settings = get_settings()
+    model_settings = get_model_settings().reranker
+    base_url = model_settings.base_url.strip()
+    model = model_settings.model.strip() or settings.reranker_model
+    api_key = model_settings.api_key or settings.reranker_api_key
     if settings.demo_fixture_enabled:
         return LocalDemoRerankerClient()
-    if settings.reranker_api_base_url.strip():
+    if base_url and base_url != settings.reranker_service_url:
         if should_use_dashscope_reranker(
-            base_url=settings.reranker_api_base_url,
-            model=settings.reranker_model,
+            base_url=base_url,
+            model=model,
         ):
             return DashScopeTextRerankerClient(
-                base_url=settings.reranker_api_base_url,
-                model=settings.reranker_model,
-                api_key=settings.reranker_api_key,
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
             )
         return RerankerClient(
-            base_url=settings.reranker_api_base_url,
-            model=settings.reranker_model,
-            api_key=settings.reranker_api_key,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
         )
     return RerankerClient(
-        base_url=settings.reranker_service_url,
-        model=settings.reranker_model,
+        base_url=base_url or settings.reranker_service_url,
+        model=model,
     )

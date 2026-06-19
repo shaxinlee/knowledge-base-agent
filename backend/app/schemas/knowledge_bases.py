@@ -26,6 +26,11 @@ class KnowledgeBaseListResponse(BaseModel):
     page_size: int
 
 
+class KnowledgeBasePublicSummaryResponse(BaseModel):
+    active_count: int
+    deployment_day: int
+
+
 class KnowledgeBaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None

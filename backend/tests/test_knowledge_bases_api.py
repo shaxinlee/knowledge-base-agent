@@ -118,6 +118,44 @@ def test_admin_can_create_list_get_and_update_knowledge_base() -> None:
         app.dependency_overrides.clear()
 
 
+def test_public_summary_does_not_require_login_and_counts_active_knowledge_bases() -> None:
+    session_factory = _make_session_factory()
+    _seed_admin_and_user(session_factory)
+    _install_db_override(session_factory)
+    try:
+        client = TestClient(app)
+
+        empty_response = client.get("/api/v1/knowledge-bases/public-summary")
+        assert empty_response.status_code == 200
+        assert empty_response.json() == {"active_count": 0, "deployment_day": 1}
+
+        admin_token = _login(client, "admin", "AdminPassword123")
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        client.post(
+            "/api/v1/knowledge-bases",
+            headers=admin_headers,
+            json={"name": "Pickle Jar 1"},
+        )
+        deleting_response = client.post(
+            "/api/v1/knowledge-bases",
+            headers=admin_headers,
+            json={"name": "Pickle Jar 2"},
+        )
+        client.patch(
+            f"/api/v1/knowledge-bases/{deleting_response.json()['id']}",
+            headers=admin_headers,
+            json={"status": "deleting"},
+        )
+
+        summary_response = client.get("/api/v1/knowledge-bases/public-summary")
+        assert summary_response.status_code == 200
+        payload = summary_response.json()
+        assert payload["active_count"] == 1
+        assert payload["deployment_day"] >= 1
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_user_can_only_read_active_knowledge_bases() -> None:
     session_factory = _make_session_factory()
     _seed_admin_and_user(session_factory)

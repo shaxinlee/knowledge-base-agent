@@ -30,6 +30,7 @@ uploads/
 tmp/
 logs/
 /models/
+backend/app/config/model_settings.json
 
 # Editors and OS files
 .idea/

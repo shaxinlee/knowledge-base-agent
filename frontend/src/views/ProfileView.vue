@@ -1,6 +1,18 @@
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue'
-import { RefreshCw, ShieldCheck, UserCircle } from '@lucide/vue'
+import {
+  BrainCircuit,
+  FileSearch,
+  Image,
+  KeyRound,
+  RefreshCw,
+  Route,
+  SearchCheck,
+  ServerCog,
+  ShieldCheck,
+  UserCircle,
+  WandSparkles,
+} from '@lucide/vue'
 import { ElButton, ElIcon, ElInput, ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -10,9 +22,11 @@ import {
   getAccessToken,
   getAssistantProfile,
   getCurrentUser,
+  getModelSettings,
   updateAssistantProfile,
+  updateModelSettings,
 } from '@/api/client'
-import type { AssistantProfile, User } from '@/api/types'
+import type { AssistantProfile, ModelEndpointSettings, ModelSettings, User } from '@/api/types'
 import AppLayout from '@/components/AppLayout.vue'
 import PageHeader from '@/components/PageHeader.vue'
 
@@ -20,8 +34,10 @@ const router = useRouter()
 const currentUser = ref<User | null>(null)
 const loading = ref(false)
 const profileSaving = ref(false)
+const modelSettingsSaving = ref(false)
 const errorMessage = ref('')
 const profileErrorMessage = ref('')
+const modelSettingsErrorMessage = ref('')
 const assistantProfile = reactive<AssistantProfile>({
   name: '',
   identity_answer: '',
@@ -32,6 +48,71 @@ const assistantProfile = reactive<AssistantProfile>({
   handoff_answer: '',
   fallback_casual_answer: '',
 })
+const modelSettings = reactive<ModelSettings>({
+  mineru: emptyModelEndpoint(),
+  llm: emptyModelEndpoint(),
+  text_embedding: emptyModelEndpoint(),
+  reranker: emptyModelEndpoint(),
+  intent_recognition: emptyModelEndpoint(),
+  knowledge_search_classifier: emptyModelEndpoint(),
+  image_description: emptyModelEndpoint(),
+  multimodal_embedding: emptyModelEndpoint(),
+})
+const modelConfigGroups: Array<{
+  key: keyof ModelSettings
+  title: string
+  description: string
+  icon: typeof ServerCog
+}> = [
+  {
+    key: 'mineru',
+    title: 'MinerU 文档解析',
+    description: '上传文件解析服务，负责把 PDF、Office、图片等资料转为可标准化内容。',
+    icon: FileSearch,
+  },
+  {
+    key: 'llm',
+    title: '回答生成 LLM',
+    description: '最终问答和直接回复使用的模型，需兼容 Chat Completions 接口。',
+    icon: BrainCircuit,
+  },
+  {
+    key: 'text_embedding',
+    title: '文本向量 Embedding',
+    description: '文档 chunk 入库和用户问题向量召回使用的模型。',
+    icon: SearchCheck,
+  },
+  {
+    key: 'reranker',
+    title: '重排 Reranker',
+    description: '混合召回后对候选 chunk 重新排序的模型。',
+    icon: Route,
+  },
+  {
+    key: 'intent_recognition',
+    title: '意图识别路由',
+    description: '判断问题需要查正文、表格、图片或元数据的路由模型。',
+    icon: WandSparkles,
+  },
+  {
+    key: 'knowledge_search_classifier',
+    title: '知识库检索分类',
+    description: '判断问题走知识库检索、知识库总览或普通助手回复。',
+    icon: ServerCog,
+  },
+  {
+    key: 'image_description',
+    title: '图片描述模型',
+    description: '为文档图片生成可检索描述，也用于用户上传图片的辅助理解。',
+    icon: Image,
+  },
+  {
+    key: 'multimodal_embedding',
+    title: '多模态向量模型',
+    description: '图片和图文内容的向量化配置，用于视觉检索。',
+    icon: KeyRound,
+  },
+]
 
 const avatarText = computed(() => {
   const source = currentUser.value?.display_name || currentUser.value?.username || 'KB'
@@ -59,7 +140,7 @@ async function loadProfile(): Promise<void> {
   try {
     currentUser.value = await getCurrentUser()
     if (isAdmin.value) {
-      await loadAssistantProfile()
+      await Promise.all([loadAssistantProfile(), loadModelSettings()])
     }
   } catch (error) {
     clearAuthTokens()
@@ -70,6 +151,16 @@ async function loadProfile(): Promise<void> {
   }
 }
 
+async function loadModelSettings(): Promise<void> {
+  modelSettingsErrorMessage.value = ''
+  try {
+    assignModelSettings(await getModelSettings())
+  } catch (error) {
+    modelSettingsErrorMessage.value =
+      error instanceof Error ? error.message : '读取模型配置失败。'
+  }
+}
+
 async function loadAssistantProfile(): Promise<void> {
   profileErrorMessage.value = ''
   try {
@@ -77,6 +168,20 @@ async function loadAssistantProfile(): Promise<void> {
   } catch (error) {
     profileErrorMessage.value =
       error instanceof Error ? error.message : '读取助手配置失败。'
+  }
+}
+
+async function saveModelSettings(): Promise<void> {
+  modelSettingsSaving.value = true
+  modelSettingsErrorMessage.value = ''
+  try {
+    assignModelSettings(await updateModelSettings(buildModelSettingsPayload()))
+    ElMessage.success('模型配置已保存到本地配置文件')
+  } catch (error) {
+    modelSettingsErrorMessage.value =
+      error instanceof Error ? error.message : '保存模型配置失败。'
+  } finally {
+    modelSettingsSaving.value = false
   }
 }
 
@@ -113,6 +218,37 @@ function buildAssistantProfilePayload(): AssistantProfile {
     usage_answer: assistantProfile.usage_answer.trim(),
     handoff_answer: assistantProfile.handoff_answer.trim(),
     fallback_casual_answer: assistantProfile.fallback_casual_answer.trim(),
+  }
+}
+
+function emptyModelEndpoint(): ModelEndpointSettings {
+  return { base_url: '', api_key: '', model: '' }
+}
+
+function assignModelSettings(settings: ModelSettings): void {
+  for (const key of Object.keys(modelSettings) as Array<keyof ModelSettings>) {
+    Object.assign(modelSettings[key], settings[key])
+  }
+}
+
+function buildModelSettingsPayload(): ModelSettings {
+  return {
+    mineru: trimModelEndpoint(modelSettings.mineru),
+    llm: trimModelEndpoint(modelSettings.llm),
+    text_embedding: trimModelEndpoint(modelSettings.text_embedding),
+    reranker: trimModelEndpoint(modelSettings.reranker),
+    intent_recognition: trimModelEndpoint(modelSettings.intent_recognition),
+    knowledge_search_classifier: trimModelEndpoint(modelSettings.knowledge_search_classifier),
+    image_description: trimModelEndpoint(modelSettings.image_description),
+    multimodal_embedding: trimModelEndpoint(modelSettings.multimodal_embedding),
+  }
+}
+
+function trimModelEndpoint(endpoint: ModelEndpointSettings): ModelEndpointSettings {
+  return {
+    base_url: endpoint.base_url.trim(),
+    api_key: endpoint.api_key.trim(),
+    model: endpoint.model.trim(),
   }
 }
 
@@ -273,6 +409,67 @@ function formatTime(value: string | null): string {
           <p v-if="profileErrorMessage" class="error-message">{{ profileErrorMessage }}</p>
         </div>
       </section>
+
+      <section v-if="isAdmin" class="model-settings-card ka-card">
+        <div class="section-heading model-settings-heading">
+          <div>
+            <h2>模型配置</h2>
+            <p>集中配置当前系统会调用的模型服务，保存后写入本地配置文件。</p>
+          </div>
+          <div class="section-actions">
+            <el-button :disabled="modelSettingsSaving" @click="loadModelSettings">重载</el-button>
+            <el-button type="primary" :loading="modelSettingsSaving" @click="saveModelSettings">
+              保存
+            </el-button>
+          </div>
+        </div>
+
+        <div class="model-settings-list">
+          <section
+            v-for="group in modelConfigGroups"
+            :key="group.key"
+            class="model-config-row"
+          >
+            <div class="model-config-meta">
+              <component :is="group.icon" class="model-config-icon" />
+              <div>
+                <h3>{{ group.title }}</h3>
+                <p>{{ group.description }}</p>
+              </div>
+            </div>
+            <div class="model-config-fields">
+              <label>
+                URL
+                <el-input
+                  v-model="modelSettings[group.key].base_url"
+                  placeholder="https://api.example.com"
+                  size="large"
+                />
+              </label>
+              <label>
+                API Key
+                <el-input
+                  v-model="modelSettings[group.key].api_key"
+                  placeholder="本地服务可留空"
+                  show-password
+                  size="large"
+                />
+              </label>
+              <label>
+                Model Name
+                <el-input
+                  v-model="modelSettings[group.key].model"
+                  placeholder="模型名称"
+                  size="large"
+                />
+              </label>
+            </div>
+          </section>
+        </div>
+        <p v-if="modelSettingsErrorMessage" class="error-message">
+          {{ modelSettingsErrorMessage }}
+        </p>
+      </section>
     </section>
   </AppLayout>
 </template>
@@ -290,6 +487,13 @@ function formatTime(value: string | null): string {
 }
 
 .assistant-profile-card {
+  display: grid;
+  gap: 22px;
+  margin-top: 24px;
+  padding: 28px 32px;
+}
+
+.model-settings-card {
   display: grid;
   gap: 22px;
   margin-top: 24px;
@@ -341,6 +545,68 @@ function formatTime(value: string | null): string {
   gap: 18px;
 }
 
+.model-settings-list {
+  display: grid;
+  gap: 14px;
+}
+
+.model-config-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  padding: 18px 0;
+  border-top: 1px solid var(--ka-border);
+}
+
+.model-config-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.model-config-row:last-child {
+  padding-bottom: 0;
+}
+
+.model-config-meta {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.model-config-icon {
+  width: 38px;
+  height: 38px;
+  padding: 8px;
+  border: 1px solid var(--ka-border);
+  border-radius: 10px;
+  color: var(--ka-primary);
+  background: #f8fafc;
+  stroke-width: 1.9;
+}
+
+.model-config-meta h3 {
+  margin: 0;
+  color: var(--ka-text);
+  font-size: 15px;
+  line-height: 22px;
+}
+
+.model-config-meta p {
+  margin: 4px 0 0;
+  color: var(--ka-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 19px;
+}
+
+.model-config-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.9fr);
+  gap: 12px;
+}
+
 label {
   display: grid;
   gap: 8px;
@@ -359,6 +625,8 @@ label {
   }
 
   .assistant-profile-form,
+  .model-config-fields,
+  .model-config-row,
   .section-heading {
     grid-template-columns: 1fr;
   }

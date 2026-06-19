@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.errors import ApiError
 from app.schemas.retrieval import RetrievalResultItem
 from app.services.content_normalization import normalize_special_elements
+from app.services.model_settings import get_model_settings
 from app.services.visual_citations import strip_visible_image_references
 
 PROMPT_VERSION = "rag-citations-v1"
@@ -329,11 +330,18 @@ def invalid_llm_response() -> ApiError:
 
 def get_llm_client() -> LLMClientProtocol:
     settings = get_settings()
-    base_url = settings.llm_api_base_url.strip() or settings.llm_api_base.strip()
-    if base_url and settings.llm_model.strip():
+    model_settings = get_model_settings().llm
+    base_url = (
+        model_settings.base_url.strip()
+        or settings.llm_api_base_url.strip()
+        or settings.llm_api_base.strip()
+    )
+    model = model_settings.model.strip() or settings.llm_model.strip()
+    api_key = model_settings.api_key or settings.llm_api_key
+    if base_url and model:
         return LLMApiClient(
             base_url=base_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
+            api_key=api_key,
+            model=model,
         )
     return TemplateDemoLLMClient()
