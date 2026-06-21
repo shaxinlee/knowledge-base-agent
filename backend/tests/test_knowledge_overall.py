@@ -9,9 +9,11 @@ from app.core.security import hash_password
 from app.db.base import Base
 from app.models import (
     ChunkMetadata,
+    DocumentSummary,
     File,
     FileStatus,
     KnowledgeBase,
+    KnowledgeBaseCommunitySummary,
     KnowledgeBaseStatus,
     ParseJob,
     ParseJobStatus,
@@ -23,6 +25,7 @@ from app.models import (
 from app.services.auth import create_default_admin
 from app.services.knowledge_overall import (
     is_knowledge_overall_query,
+    read_knowledge_base_overall,
     rebuild_knowledge_base_overall,
 )
 
@@ -164,8 +167,47 @@ def test_rebuild_knowledge_base_overall_writes_file_table() -> None:
     assert stored["content_type"] == "text/markdown; charset=utf-8"
     assert b"manual.pdf" in stored["data"]
 
+    with session_factory() as db:
+        file = db.scalar(select(File).where(File.knowledge_base_id == knowledge_base_id))
+        assert file is not None
+        assert file.latest_parse_job_id is not None
+        db.add(
+            DocumentSummary(
+                knowledge_base_id=knowledge_base_id,
+                file_id=file.id,
+                parse_job_id=file.latest_parse_job_id,
+                status="completed",
+                summary="该文档介绍井下落鱼可视化工具的用途和操作方式。",
+                chunk_prompt_version="chunk-knowledge-extraction-v1",
+                document_prompt_version="document-summary-v1",
+            )
+        )
+        db.add(
+            KnowledgeBaseCommunitySummary(
+                knowledge_base_id=knowledge_base_id,
+                status="completed",
+                summary="该知识库主要收录井下工具说明和现场操作资料。",
+                document_count=1,
+                prompt_version="knowledge-base-community-summary-v1",
+            )
+        )
+        db.commit()
+        live_content = read_knowledge_base_overall(
+            db,
+            knowledge_base_id=knowledge_base_id,
+            storage=storage,
+        )
+
+    assert "知识库创建时间 " in live_content
+    assert "## 知识库社区摘要" in live_content
+    assert "该知识库主要收录井下工具说明和现场操作资料。" in live_content
+    assert "## 各文档摘要" in live_content
+    assert "### 1. manual.pdf" in live_content
+    assert "该文档介绍井下落鱼可视化工具的用途和操作方式。" in live_content
+
 
 def test_is_knowledge_overall_query_matches_catalog_questions() -> None:
     assert is_knowledge_overall_query("当前知识库都包含什么数据？")
     assert is_knowledge_overall_query("这个知识库有哪些文件")
+    assert is_knowledge_overall_query("这个知识库讲什么的？")
     assert not is_knowledge_overall_query("RTTS封隔器如何解卡？")

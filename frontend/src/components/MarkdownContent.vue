@@ -10,7 +10,7 @@ const props = defineProps<{
 
 const blocks = computed(() =>
   parseMarkdownDisplayBlocks(
-    normalizeMarkdownTableBreaks(props.content).split(/\r?\n/),
+    normalizeMarkdownBlockBreaks(props.content).split(/\r?\n/),
     props.normalizeText,
   ),
 )
@@ -23,8 +23,10 @@ interface InlineSegment {
   text: string
 }
 
-function normalizeMarkdownTableBreaks(content: string): string {
-  return content.replace(/\|\s*\|\s*(?=(?::?-{3,}:?\s*\|)|(?:\d+\s*\|))/g, '|\n| ')
+function normalizeMarkdownBlockBreaks(content: string): string {
+  return content
+    .replace(/\|\s*\|\s*(?=(?::?-{3,}:?\s*\|)|(?:\d+\s*\|))/g, '|\n| ')
+    .replace(/([^\n])[\t ]+(?=#{1,6}\s+\S)/g, '$1\n\n')
 }
 
 function inlineSegments(text: string): InlineSegment[] {

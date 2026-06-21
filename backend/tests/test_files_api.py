@@ -26,7 +26,9 @@ from app.db.session import get_db, get_session_factory
 from app.main import app
 from app.models import (
     AuditLog,
+    ChunkKnowledgeExtraction,
     ChunkMetadata,
+    DocumentSummary,
     DocumentBlock,
     File,
     FileStatus,
@@ -43,6 +45,7 @@ from app.services.auth import create_default_admin
 from app.services.bm25_index import BM25ChunkDocument, BM25IndexClientProtocol
 from app.services.chunks import build_chunk_drafts, build_chunk_response
 from app.services.document_blocks import extract_blocks_from_zip
+from app.services.document_summary_llm import CHUNK_PROMPT_VERSION, DOCUMENT_PROMPT_VERSION
 from app.services.embedding import EmbeddingClientProtocol
 from app.services.image_descriptions import ImageDescriptionClientProtocol, ImageDescriptionInput
 from app.services.mineru import MineruClient, MineruSubmission
@@ -518,6 +521,152 @@ def _seed_admin_user_and_kb(session_factory: sessionmaker[Session]) -> UUID:
 
 def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_admin_can_read_retry_and_debug_document_summary() -> None:
+    session_factory = _make_session_factory()
+    storage = FakeObjectStorage()
+    knowledge_base_id = _seed_admin_user_and_kb(session_factory)
+    _install_overrides(session_factory, storage)
+    with session_factory() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        assert admin is not None
+        file = File(
+            knowledge_base_id=knowledge_base_id,
+            file_name="summary.pdf",
+            file_ext=".pdf",
+            mime_type="application/pdf",
+            file_size=100,
+            file_hash="d" * 64,
+            storage_bucket="raw-files",
+            storage_key="summary.pdf",
+            status=FileStatus.INDEXED.value,
+            created_by=admin.id,
+        )
+        db.add(file)
+        db.flush()
+        parse_job = ParseJob(
+            file_id=file.id,
+            knowledge_base_id=knowledge_base_id,
+            status=ParseJobStatus.INDEXED.value,
+            progress=100,
+            created_by=admin.id,
+        )
+        db.add(parse_job)
+        db.flush()
+        file.latest_parse_job_id = parse_job.id
+        chunk = ChunkMetadata(
+            knowledge_base_id=knowledge_base_id,
+            file_id=file.id,
+            parse_job_id=parse_job.id,
+            chunk_index=0,
+            content="文档要求所有操作保留审计记录。",
+            content_hash="e" * 64,
+            token_count=15,
+            source_type="pdf",
+            source_locator="pdf:p1",
+            chunk_metadata={"document_block_types": ["text"]},
+            is_active=True,
+        )
+        db.add(chunk)
+        db.flush()
+        extraction_payload = {
+            "chunk_id": str(chunk.id),
+            "semantic_role": "REQUIREMENT",
+            "short_summary": "文档要求所有操作保留审计记录。",
+            "topics": ["审计"],
+            "keywords": ["操作", "审计记录"],
+            "entities": [],
+            "assertions": [
+                {
+                    "statement": "所有操作必须保留审计记录。",
+                    "statement_type": "REQUIREMENT",
+                    "subject": "所有操作",
+                    "predicate": "必须保留",
+                    "object": "审计记录",
+                    "conditions": [],
+                    "time_scope": None,
+                    "polarity": "POSITIVE",
+                    "certainty": "HIGH",
+                    "evidence_text": "要求所有操作保留审计记录",
+                }
+            ],
+            "importance": 0.9,
+            "quality_flags": ["NONE"],
+        }
+        db.add(
+            ChunkKnowledgeExtraction(
+                chunk_id=chunk.id,
+                file_id=file.id,
+                parse_job_id=parse_job.id,
+                status="completed",
+                extraction=extraction_payload,
+                short_summary=extraction_payload["short_summary"],
+                model_name="test-model",
+                prompt_version=CHUNK_PROMPT_VERSION,
+                attempt_count=1,
+            )
+        )
+        db.add(
+            DocumentSummary(
+                knowledge_base_id=knowledge_base_id,
+                file_id=file.id,
+                parse_job_id=parse_job.id,
+                status="completed",
+                priority=10,
+                summary="该文档规定所有操作需要保留审计记录。",
+                chunk_total=1,
+                chunk_completed=1,
+                chunk_succeeded=1,
+                chunk_failed=0,
+                failed_chunk_ids=[],
+                model_name="test-model",
+                chunk_prompt_version=CHUNK_PROMPT_VERSION,
+                document_prompt_version=DOCUMENT_PROMPT_VERSION,
+            )
+        )
+        db.commit()
+        file_id = file.id
+        chunk_id = chunk.id
+
+    try:
+        client = TestClient(app)
+        admin_token = _login(client, "admin", "AdminPassword123")
+        user_token = _login(client, "reader", "ReaderPassword123")
+
+        forbidden = client.get(
+            f"/api/v1/files/{file_id}/summary",
+            headers=_headers(user_token),
+        )
+        assert forbidden.status_code == 403
+
+        response = client.get(
+            f"/api/v1/files/{file_id}/summary",
+            headers=_headers(admin_token),
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "completed"
+        assert response.json()["summary"] == "该文档规定所有操作需要保留审计记录。"
+
+        chunks_response = client.get(
+            f"/api/v1/files/{file_id}/chunks",
+            headers=_headers(admin_token),
+        )
+        assert chunks_response.status_code == 200
+        extraction = chunks_response.json()["items"][0]["knowledge_extraction"]
+        assert extraction["extraction"]["chunk_id"] == str(chunk_id)
+        assert extraction["extraction"]["semantic_role"] == "REQUIREMENT"
+
+        retry_response = client.post(
+            f"/api/v1/files/{file_id}/summary/retry",
+            headers=_headers(admin_token),
+            json={"force": True},
+        )
+        assert retry_response.status_code == 202
+        assert retry_response.json()["status"] == "pending"
+        assert retry_response.json()["chunk_completed"] == 0
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_admin_can_upload_file_and_read_list_status_and_minio_object() -> None:

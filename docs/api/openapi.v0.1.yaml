@@ -451,6 +451,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FileStatusResponse"
+  /files/{file_id}/summary:
+    get:
+      tags: [Files]
+      summary: Get current document summary
+      parameters:
+        - $ref: "#/components/parameters/FileId"
+      responses:
+        "200":
+          description: Document summary and chunk extraction progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentSummary"
+  /files/{file_id}/summary/retry:
+    post:
+      tags: [Files]
+      summary: Retry or rebuild current document summary
+      parameters:
+        - $ref: "#/components/parameters/FileId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  default: false
+      responses:
+        "202":
+          description: Summary task queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentSummary"
   /files/{file_id}/retry-parse:
     post:
       tags: [Files]
@@ -479,6 +515,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChunkListResponse"
+  /knowledge-graph:
+    get:
+      tags: [KnowledgeGraph]
+      summary: Get document summary relationship graph
+      parameters:
+        - name: knowledge_base_id
+          in: query
+          schema:
+            type: string
+        - name: include_cross_knowledge_base
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: min_similarity
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+            default: 0.45
+      responses:
+        "200":
+          description: Knowledge graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeGraph"
+  /knowledge-graph/refresh:
+    post:
+      tags: [KnowledgeGraph]
+      summary: Rebuild document relationships and community summaries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force_embeddings:
+                  type: boolean
+                  default: false
+      responses:
+        "202":
+          description: Rebuild requested
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeGraph"
+  /knowledge-bases/{knowledge_base_id}/community-summary:
+    get:
+      tags: [KnowledgeGraph]
+      summary: Get knowledge-base community summary
+      parameters:
+        - $ref: "#/components/parameters/KnowledgeBaseId"
+      responses:
+        "200":
+          description: Community summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommunitySummary"
   /knowledge-bases/{knowledge_base_id}/retrieval/search:
     post:
       tags: [Retrieval]
@@ -1109,6 +1207,246 @@ components:
           type: boolean
         created_at:
           $ref: "#/components/schemas/ISODateTime"
+        knowledge_extraction:
+          anyOf:
+            - $ref: "#/components/schemas/ChunkKnowledgeExtraction"
+            - type: "null"
+    ChunkKnowledgeExtraction:
+      type: object
+      required: [status, prompt_version, attempt_count]
+      properties:
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        extraction:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        model_name:
+          type:
+            - string
+            - "null"
+        prompt_version:
+          type: string
+        attempt_count:
+          type: integer
+        error_code:
+          type:
+            - string
+            - "null"
+        error_message:
+          type:
+            - string
+            - "null"
+    DocumentSummary:
+      type: object
+      required:
+        - file_id
+        - status
+        - chunk_total
+        - chunk_completed
+        - chunk_succeeded
+        - chunk_failed
+        - failed_chunk_ids
+        - chunk_prompt_version
+        - document_prompt_version
+        - reduction_level
+      properties:
+        file_id:
+          type: string
+        parse_job_id:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum: [pending, running, completed, partially_completed, failed, not_ready]
+        summary:
+          type:
+            - string
+            - "null"
+        chunk_total:
+          type: integer
+        chunk_completed:
+          type: integer
+        chunk_succeeded:
+          type: integer
+        chunk_failed:
+          type: integer
+        failed_chunk_ids:
+          type: array
+          items:
+            type: string
+        model_name:
+          type:
+            - string
+            - "null"
+        chunk_prompt_version:
+          type: string
+        document_prompt_version:
+          type: string
+        reduction_level:
+          type: integer
+        error_code:
+          type:
+            - string
+            - "null"
+        error_message:
+          type:
+            - string
+            - "null"
+    KnowledgeGraphNode:
+      type: object
+      required:
+        - id
+        - file_id
+        - document_summary_id
+        - file_name
+        - file_ext
+        - knowledge_base_id
+        - knowledge_base_name
+        - summary
+        - summary_status
+        - relation_count
+      properties:
+        id:
+          type: string
+        file_id:
+          type: string
+        document_summary_id:
+          type: string
+        file_name:
+          type: string
+        file_ext:
+          type: string
+        knowledge_base_id:
+          type: string
+        knowledge_base_name:
+          type: string
+        summary:
+          type: string
+        summary_status:
+          type: string
+        relation_count:
+          type: integer
+    KnowledgeGraphEdge:
+      type: object
+      required: [id, source, target, similarity, cross_knowledge_base]
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+        similarity:
+          type: number
+          minimum: 0
+          maximum: 1
+        cross_knowledge_base:
+          type: boolean
+    CommunitySummary:
+      type: object
+      required:
+        - knowledge_base_id
+        - knowledge_base_name
+        - status
+        - document_count
+        - prompt_version
+        - reduction_level
+      properties:
+        knowledge_base_id:
+          type: string
+        knowledge_base_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, not_ready]
+        summary:
+          type:
+            - string
+            - "null"
+        document_count:
+          type: integer
+        model_name:
+          type:
+            - string
+            - "null"
+        prompt_version:
+          type: string
+        reduction_level:
+          type: integer
+        error_code:
+          type:
+            - string
+            - "null"
+        error_message:
+          type:
+            - string
+            - "null"
+        updated_at:
+          anyOf:
+            - $ref: "#/components/schemas/ISODateTime"
+            - type: "null"
+    KnowledgeGraph:
+      type: object
+      required:
+        - status
+        - document_count
+        - total_document_count
+        - summarized_document_count
+        - pending_summary_count
+        - failed_summary_count
+        - not_ready_document_count
+        - relation_count
+        - similarity_threshold
+        - max_relations_per_document
+        - nodes
+        - edges
+        - communities
+      properties:
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        source_fingerprint:
+          type:
+            - string
+            - "null"
+        document_count:
+          type: integer
+        total_document_count:
+          type: integer
+        summarized_document_count:
+          type: integer
+        pending_summary_count:
+          type: integer
+        failed_summary_count:
+          type: integer
+        not_ready_document_count:
+          type: integer
+        relation_count:
+          type: integer
+        embedding_model:
+          type:
+            - string
+            - "null"
+        similarity_threshold:
+          type: number
+        max_relations_per_document:
+          type: integer
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeGraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeGraphEdge"
+        communities:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommunitySummary"
     ChunkListResponse:
       allOf:
         - $ref: "#/components/schemas/PaginatedResponse"

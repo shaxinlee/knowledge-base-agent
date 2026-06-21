@@ -8,6 +8,7 @@ import type {
   Conversation,
   ConversationCreateRequest,
   ConversationDetail,
+  DocumentSummary,
   FileItem,
   FileListQuery,
   FileStatusResponse,
@@ -25,6 +26,7 @@ import type {
   KnowledgeBase,
   KnowledgeBasePublicSummary,
   KnowledgeBaseUpdateRequest,
+  KnowledgeGraph,
   LogoutRequest,
   ParseJob,
   ResetPasswordRequest,
@@ -42,6 +44,8 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const ACCESS_TOKEN_KEY = 'kb_agent_access_token'
 const REFRESH_TOKEN_KEY = 'kb_agent_refresh_token'
+let cachedCurrentUser: User | null = null
+let currentUserRequest: Promise<User> | null = null
 
 export class ApiClientError extends Error {
   code?: string
@@ -66,11 +70,15 @@ export function getRefreshToken(): string | null {
 export function saveAuthTokens(response: LoginResponse): void {
   window.localStorage.setItem(ACCESS_TOKEN_KEY, response.access_token)
   window.localStorage.setItem(REFRESH_TOKEN_KEY, response.refresh_token)
+  cachedCurrentUser = response.user
+  currentUserRequest = null
 }
 
 export function clearAuthTokens(): void {
   window.localStorage.removeItem(ACCESS_TOKEN_KEY)
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
+  cachedCurrentUser = null
+  currentUserRequest = null
 }
 
 export async function login(payload: LoginRequest): Promise<LoginResponse> {
@@ -97,8 +105,31 @@ export async function createConsumerSession(
   })
 }
 
-export async function getCurrentUser(): Promise<User> {
-  return apiRequest<User>('/auth/me')
+export function getCachedCurrentUser(): User | null {
+  return cachedCurrentUser
+}
+
+export async function getCurrentUser(forceRefresh = false): Promise<User> {
+  if (!forceRefresh && cachedCurrentUser) {
+    return cachedCurrentUser
+  }
+  if (!forceRefresh && currentUserRequest) {
+    return currentUserRequest
+  }
+
+  let request: Promise<User>
+  request = apiRequest<User>('/auth/me')
+    .then((user) => {
+      cachedCurrentUser = user
+      return user
+    })
+    .finally(() => {
+      if (currentUserRequest === request) {
+        currentUserRequest = null
+      }
+    })
+  currentUserRequest = request
+  return request
 }
 
 export async function logout(payload: LogoutRequest): Promise<void> {
@@ -205,6 +236,30 @@ export async function getKnowledgeBasePublicSummary(): Promise<KnowledgeBasePubl
   })
 }
 
+export async function getKnowledgeGraph(query: {
+  knowledge_base_id?: string
+  include_cross_knowledge_base?: boolean
+  min_similarity?: number
+} = {}): Promise<KnowledgeGraph> {
+  const params = new URLSearchParams()
+  if (query.knowledge_base_id) {
+    params.set('knowledge_base_id', query.knowledge_base_id)
+  }
+  params.set(
+    'include_cross_knowledge_base',
+    String(query.include_cross_knowledge_base ?? true),
+  )
+  params.set('min_similarity', String(query.min_similarity ?? 0.45))
+  return apiRequest<KnowledgeGraph>(`/knowledge-graph?${params.toString()}`)
+}
+
+export async function refreshKnowledgeGraph(forceEmbeddings = false): Promise<KnowledgeGraph> {
+  return apiRequest<KnowledgeGraph>('/knowledge-graph/refresh', {
+    method: 'POST',
+    body: JSON.stringify({ force_embeddings: forceEmbeddings }),
+  })
+}
+
 export async function createKnowledgeBase(
   payload: KnowledgeBaseCreateRequest,
 ): Promise<KnowledgeBase> {
@@ -268,6 +323,20 @@ export async function getFileStatus(fileId: string): Promise<FileStatusResponse>
 
 export async function getFile(fileId: string): Promise<FileItem> {
   return apiRequest<FileItem>(`/files/${fileId}`)
+}
+
+export async function getFileSummary(fileId: string): Promise<DocumentSummary> {
+  return apiRequest<DocumentSummary>(`/files/${fileId}/summary`)
+}
+
+export async function retryFileSummary(
+  fileId: string,
+  force = false,
+): Promise<DocumentSummary> {
+  return apiRequest<DocumentSummary>(`/files/${fileId}/summary/retry`, {
+    method: 'POST',
+    body: JSON.stringify({ force }),
+  })
 }
 
 export async function retryParseFile(fileId: string): Promise<ParseJob> {

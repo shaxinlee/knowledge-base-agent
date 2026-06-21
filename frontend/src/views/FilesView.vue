@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Delete, RefreshRight, Search, Upload, View, Warning } from '@element-plus/icons-vue'
 import { ElButton, ElIcon, ElInput, ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -9,12 +9,20 @@ import {
   deleteFile,
   getAccessToken,
   getFileStatus,
+  getFileSummary,
   listFiles,
   listKnowledgeBases,
   retryParseFile,
+  retryFileSummary,
   uploadFiles,
 } from '@/api/client'
-import type { FileItem, FileStatus, FileStatusResponse, KnowledgeBase } from '@/api/types'
+import type {
+  DocumentSummary,
+  FileItem,
+  FileStatus,
+  FileStatusResponse,
+  KnowledgeBase,
+} from '@/api/types'
 import AppLayout from '@/components/AppLayout.vue'
 import PageHeader from '@/components/PageHeader.vue'
 
@@ -31,6 +39,12 @@ const errorMessage = ref('')
 const selectedFiles = ref<File[]>([])
 const duplicateMessage = ref('')
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const summaryDrawerOpen = ref(false)
+const summaryLoading = ref(false)
+const summaryActionLoading = ref(false)
+const summaryFile = ref<FileItem | null>(null)
+const documentSummary = ref<DocumentSummary | null>(null)
+let summaryPollTimer: number | null = null
 
 const activeKnowledgeBase = computed(
   () => knowledgeBases.value.find((item) => item.id === activeKnowledgeBaseId.value) ?? null,
@@ -50,6 +64,10 @@ onMounted(async () => {
     return
   }
   await loadKnowledgeBases()
+})
+
+onUnmounted(() => {
+  stopSummaryPolling()
 })
 
 async function loadKnowledgeBases(): Promise<void> {
@@ -181,6 +199,123 @@ async function retryFile(file: FileItem): Promise<void> {
   } catch (error) {
     handleError(error)
   }
+}
+
+async function openFileSummary(file: FileItem): Promise<void> {
+  summaryFile.value = file
+  documentSummary.value = null
+  summaryDrawerOpen.value = true
+  await loadFileSummary()
+}
+
+async function loadFileSummary(showMessage = false): Promise<void> {
+  if (!summaryFile.value) return
+  summaryLoading.value = true
+  try {
+    documentSummary.value = await getFileSummary(summaryFile.value.id)
+    if (showMessage) {
+      ElMessage.success('摘要状态已刷新')
+    }
+    updateSummaryPolling()
+  } catch (error) {
+    stopSummaryPolling()
+    handleError(error)
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+async function triggerSummaryRetry(force: boolean): Promise<void> {
+  if (!summaryFile.value) return
+  if (force) {
+    try {
+      await ElMessageBox.confirm(
+        '这会重新处理当前文档的全部 Chunk，并覆盖当前摘要结果。确认继续？',
+        '重新生成摘要',
+        {
+          confirmButtonText: '重新生成',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      )
+    } catch (error) {
+      if (error === 'cancel') return
+      throw error
+    }
+  }
+  summaryActionLoading.value = true
+  try {
+    documentSummary.value = await retryFileSummary(summaryFile.value.id, force)
+    ElMessage.success(force ? '已提交全文重新生成' : '已提交失败项重试')
+    updateSummaryPolling()
+  } catch (error) {
+    handleError(error)
+  } finally {
+    summaryActionLoading.value = false
+  }
+}
+
+function handleSummaryDrawerClosed(): void {
+  stopSummaryPolling()
+  summaryFile.value = null
+  documentSummary.value = null
+}
+
+function updateSummaryPolling(): void {
+  stopSummaryPolling()
+  if (
+    summaryDrawerOpen.value &&
+    documentSummary.value &&
+    ['pending', 'running'].includes(documentSummary.value.status)
+  ) {
+    summaryPollTimer = window.setTimeout(() => {
+      void loadFileSummary()
+    }, 4000)
+  }
+}
+
+function stopSummaryPolling(): void {
+  if (summaryPollTimer !== null) {
+    window.clearTimeout(summaryPollTimer)
+    summaryPollTimer = null
+  }
+}
+
+function summaryStatusLabel(status: DocumentSummary['status']): string {
+  const labels: Record<DocumentSummary['status'], string> = {
+    pending: '等待处理',
+    running: '并发抽取中',
+    completed: '摘要完成',
+    partially_completed: '部分完成',
+    failed: '处理失败',
+    not_ready: '等待 Chunk',
+  }
+  return labels[status]
+}
+
+function summaryStatusClass(status: DocumentSummary['status']): string {
+  if (status === 'completed') return 'complete'
+  if (status === 'partially_completed') return 'partial'
+  if (status === 'failed') return 'failed'
+  if (status === 'running') return 'running'
+  return 'waiting'
+}
+
+function summaryProgress(summary: DocumentSummary): number {
+  if (summary.chunk_total <= 0) return 0
+  return Math.min(100, Math.round((summary.chunk_completed / summary.chunk_total) * 100))
+}
+
+function formatFullTime(value: string | null | undefined): string {
+  if (!value) return '-'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(value))
 }
 
 async function removeFile(file: FileItem): Promise<void> {
@@ -414,7 +549,9 @@ function handleError(error: unknown): void {
             </tr>
             <tr v-for="file in files" :key="file.id">
               <td>
-                <strong>{{ file.file_name }}</strong>
+                <button class="file-name-button" @click="openFileSummary(file)">
+                  {{ file.file_name }}
+                </button>
                 <span class="file-hash">{{ file.file_hash.slice(0, 12) }}</span>
               </td>
               <td>{{ file.file_ext }}</td>
@@ -433,6 +570,10 @@ function handleError(error: unknown): void {
               <td>{{ formatTime(file.updated_at) }}</td>
               <td>
                 <div class="ka-actions">
+                  <button class="ka-link-button summary-link" @click="openFileSummary(file)">
+                    <el-icon><View /></el-icon>
+                    查看摘要
+                  </button>
                   <RouterLink class="ka-link-button" :to="{ name: 'chunks', query: { file_id: file.id } }">
                     <el-icon><View /></el-icon>
                     Chunk
@@ -456,6 +597,149 @@ function handleError(error: unknown): void {
         </table>
       </section>
     </section>
+
+    <el-drawer
+      v-model="summaryDrawerOpen"
+      class="summary-drawer"
+      size="min(720px, 92vw)"
+      :with-header="false"
+      destroy-on-close
+      @closed="handleSummaryDrawerClosed"
+    >
+      <div class="summary-panel">
+        <header class="summary-panel-header">
+          <div>
+            <span class="summary-eyebrow">DOCUMENT INTELLIGENCE</span>
+            <h2>{{ summaryFile?.file_name ?? '文档摘要' }}</h2>
+            <p>逐 Chunk 并发抽取后，按原始顺序归并生成。</p>
+          </div>
+          <button
+            class="summary-close"
+            aria-label="关闭摘要"
+            @click="summaryDrawerOpen = false"
+          >
+            ×
+          </button>
+        </header>
+
+        <div v-if="summaryLoading && !documentSummary" class="summary-loading">
+          <span class="summary-loader"></span>
+          <strong>正在读取摘要任务</strong>
+          <p>正在确认文档的 Chunk 处理进度。</p>
+        </div>
+
+        <template v-else-if="documentSummary">
+          <section
+            :class="['summary-status-rail', summaryStatusClass(documentSummary.status)]"
+          >
+            <div class="summary-status-copy">
+              <span class="summary-status-dot"></span>
+              <div>
+                <strong>{{ summaryStatusLabel(documentSummary.status) }}</strong>
+                <p v-if="documentSummary.status === 'running'">
+                  已完成 {{ documentSummary.chunk_completed }} /
+                  {{ documentSummary.chunk_total }} 个 Chunk
+                </p>
+                <p v-else-if="documentSummary.status === 'partially_completed'">
+                  {{ documentSummary.chunk_failed }} 个 Chunk 未能成功抽取，摘要基于其余内容生成
+                </p>
+                <p v-else-if="documentSummary.status === 'not_ready'">
+                  文档尚未生成可用 Chunk，解析完成后会自动开始
+                </p>
+                <p v-else>结构化抽取与文档归并状态</p>
+              </div>
+            </div>
+            <span class="summary-percentage">{{ summaryProgress(documentSummary) }}%</span>
+            <div class="summary-progress-track">
+              <span :style="{ width: `${summaryProgress(documentSummary)}%` }"></span>
+            </div>
+          </section>
+
+          <section class="summary-metrics">
+            <div>
+              <span>总 Chunk</span>
+              <strong>{{ documentSummary.chunk_total }}</strong>
+            </div>
+            <div>
+              <span>抽取成功</span>
+              <strong>{{ documentSummary.chunk_succeeded }}</strong>
+            </div>
+            <div>
+              <span>抽取失败</span>
+              <strong>{{ documentSummary.chunk_failed }}</strong>
+            </div>
+            <div>
+              <span>归并层级</span>
+              <strong>{{ documentSummary.reduction_level }}</strong>
+            </div>
+          </section>
+
+          <section v-if="documentSummary.summary" class="summary-reading">
+            <div class="summary-reading-label">
+              <span>文档摘要</span>
+              <small>{{ documentSummary.model_name || '默认 LLM' }}</small>
+            </div>
+            <article>{{ documentSummary.summary }}</article>
+          </section>
+
+          <section
+            v-else-if="documentSummary.status === 'pending' || documentSummary.status === 'running'"
+            class="summary-awaiting"
+          >
+            <span class="summary-loader"></span>
+            <div>
+              <strong>摘要正在形成</strong>
+              <p>多个 Chunk 正在并发抽取。已完成结果会即时保存，刷新或重启不会从头开始。</p>
+            </div>
+          </section>
+
+          <section v-if="documentSummary.error_message" class="summary-error">
+            <strong>{{ documentSummary.error_code || 'SUMMARY_FAILED' }}</strong>
+            <p>{{ documentSummary.error_message }}</p>
+          </section>
+
+          <dl class="summary-details">
+            <div>
+              <dt>模型</dt>
+              <dd>{{ documentSummary.model_name || '-' }}</dd>
+            </div>
+            <div>
+              <dt>Chunk Prompt</dt>
+              <dd>{{ documentSummary.chunk_prompt_version }}</dd>
+            </div>
+            <div>
+              <dt>文档 Prompt</dt>
+              <dd>{{ documentSummary.document_prompt_version }}</dd>
+            </div>
+            <div>
+              <dt>更新时间</dt>
+              <dd>{{ formatFullTime(documentSummary.updated_at) }}</dd>
+            </div>
+          </dl>
+
+          <footer class="summary-actions">
+            <el-button :loading="summaryLoading" @click="loadFileSummary(true)">
+              刷新状态
+            </el-button>
+            <el-button
+              v-if="documentSummary.status === 'failed' || documentSummary.status === 'partially_completed'"
+              :loading="summaryActionLoading"
+              @click="triggerSummaryRetry(false)"
+            >
+              重试失败项
+            </el-button>
+            <el-button
+              v-if="documentSummary.status === 'completed' || documentSummary.status === 'partially_completed'"
+              type="primary"
+              :loading="summaryActionLoading"
+              @click="triggerSummaryRetry(true)"
+            >
+              重新生成
+            </el-button>
+          </footer>
+        </template>
+      </div>
+    </el-drawer>
   </AppLayout>
 </template>
 
@@ -466,6 +750,363 @@ function handleError(error: unknown): void {
 
 .file-input {
   display: none;
+}
+
+.file-name-button {
+  display: block;
+  max-width: 280px;
+  padding: 0;
+  border: 0;
+  color: var(--ka-text);
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-name-button:hover {
+  color: var(--ka-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.summary-link {
+  color: var(--ka-primary);
+}
+
+:global(.summary-drawer .el-drawer__body) {
+  padding: 0;
+  background: #f4f3ee;
+}
+
+.summary-panel {
+  min-height: 100%;
+  color: #20231f;
+  background:
+    linear-gradient(rgba(31, 36, 31, 0.035) 1px, transparent 1px),
+    #f4f3ee;
+  background-size: 100% 28px;
+}
+
+.summary-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 32px 36px 28px;
+  border-bottom: 1px solid #d8d7ce;
+  background: rgba(250, 249, 244, 0.94);
+}
+
+.summary-eyebrow {
+  color: #657264;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+.summary-panel-header h2 {
+  max-width: 560px;
+  margin: 8px 0 6px;
+  font-family: 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 26px;
+  line-height: 1.35;
+}
+
+.summary-panel-header p {
+  margin: 0;
+  color: #71766e;
+  font-size: 13px;
+}
+
+.summary-close {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #c9c9bf;
+  border-radius: 50%;
+  color: #464b45;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.summary-close:hover {
+  border-color: #20231f;
+  background: #20231f;
+  color: #fff;
+}
+
+.summary-status-rail {
+  position: relative;
+  margin: 28px 36px 18px;
+  padding: 20px 22px 24px;
+  overflow: hidden;
+  border: 1px solid #d1d2c9;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.summary-status-copy {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.summary-status-copy strong {
+  font-size: 15px;
+}
+
+.summary-status-copy p {
+  margin: 4px 0 0;
+  color: #6d736b;
+  font-size: 13px;
+}
+
+.summary-status-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #8b9489;
+  box-shadow: 0 0 0 5px rgba(139, 148, 137, 0.12);
+}
+
+.summary-status-rail.running .summary-status-dot {
+  background: #2e77d0;
+  box-shadow: 0 0 0 5px rgba(46, 119, 208, 0.14);
+  animation: summary-pulse 1.5s ease-in-out infinite;
+}
+
+.summary-status-rail.complete .summary-status-dot {
+  background: #2d8a5f;
+}
+
+.summary-status-rail.partial .summary-status-dot {
+  background: #b87822;
+}
+
+.summary-status-rail.failed .summary-status-dot {
+  background: #c84c40;
+}
+
+.summary-percentage {
+  position: absolute;
+  top: 20px;
+  right: 22px;
+  font-family: 'Courier New', monospace;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.summary-progress-track {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 4px;
+  background: #e0e0d8;
+}
+
+.summary-progress-track span {
+  display: block;
+  height: 100%;
+  background: #2e77d0;
+  transition: width 500ms ease;
+}
+
+.complete .summary-progress-track span {
+  background: #2d8a5f;
+}
+
+.partial .summary-progress-track span {
+  background: #b87822;
+}
+
+.failed .summary-progress-track span {
+  background: #c84c40;
+}
+
+.summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 0 36px 24px;
+  border-top: 1px solid #d6d6ce;
+  border-left: 1px solid #d6d6ce;
+}
+
+.summary-metrics div {
+  display: grid;
+  gap: 7px;
+  padding: 14px 16px;
+  border-right: 1px solid #d6d6ce;
+  border-bottom: 1px solid #d6d6ce;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.summary-metrics span,
+.summary-reading-label span {
+  color: #777c74;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.summary-metrics strong {
+  font-family: 'Courier New', monospace;
+  font-size: 21px;
+}
+
+.summary-reading {
+  margin: 0 36px 24px;
+  padding: 26px 28px 30px;
+  border: 1px solid #cfcec4;
+  border-left: 4px solid #314f3c;
+  background: #fffef9;
+  box-shadow: 0 14px 36px rgba(50, 56, 49, 0.08);
+}
+
+.summary-reading-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #e2e0d6;
+}
+
+.summary-reading-label small {
+  color: #8a8d86;
+  font-family: 'Courier New', monospace;
+}
+
+.summary-reading article {
+  margin-top: 20px;
+  font-family: 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 16px;
+  line-height: 2;
+  white-space: pre-wrap;
+}
+
+.summary-awaiting,
+.summary-loading {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin: 28px 36px;
+  padding: 26px;
+  border: 1px dashed #bfc3ba;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.summary-loading {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  text-align: center;
+}
+
+.summary-awaiting p,
+.summary-loading p {
+  margin: 5px 0 0;
+  color: #72776f;
+  line-height: 1.6;
+}
+
+.summary-loader {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #c8ccc3;
+  border-top-color: #2e77d0;
+  border-radius: 50%;
+  animation: summary-spin 900ms linear infinite;
+}
+
+.summary-error {
+  margin: 0 36px 24px;
+  padding: 18px 20px;
+  border: 1px solid #e2bbb5;
+  background: #fff3f1;
+  color: #8f3028;
+}
+
+.summary-error p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.summary-details {
+  margin: 0 36px 24px;
+  border-top: 1px solid #d6d6ce;
+}
+
+.summary-details div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  padding: 11px 0;
+  border-bottom: 1px solid #d6d6ce;
+}
+
+.summary-details dt {
+  color: #777c74;
+  font-size: 12px;
+}
+
+.summary-details dd {
+  margin: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.summary-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 18px 36px;
+  border-top: 1px solid #d4d3ca;
+  background: rgba(250, 249, 244, 0.96);
+  backdrop-filter: blur(12px);
+}
+
+@keyframes summary-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes summary-pulse {
+  50% {
+    box-shadow: 0 0 0 9px rgba(46, 119, 208, 0.04);
+  }
+}
+
+@media (max-width: 680px) {
+  .summary-panel-header,
+  .summary-actions {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .summary-status-rail,
+  .summary-metrics,
+  .summary-reading,
+  .summary-awaiting,
+  .summary-loading,
+  .summary-error,
+  .summary-details {
+    margin-right: 20px;
+    margin-left: 20px;
+  }
+
+  .summary-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .upload-card {

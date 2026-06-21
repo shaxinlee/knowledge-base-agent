@@ -1013,6 +1013,10 @@ Query：
 - 检索只允许在该 knowledge_base_id 内执行。
 - 回答只能基于最终上下文 chunks。
 - 证据不足必须拒答。
+- “这个知识库讲什么”“知识库整体概览”“有哪些资料”等整体总结问题走
+  `knowledge_base_overall` 路由，不执行相似度 Top-K 检索；回答上下文必须包含
+  知识库创建时间、当前社区摘要，以及当前知识库下每个未删除文件的最新文档摘要
+  或摘要状态。该类整体概览回答不生成 Chunk citation。
 
 响应：
 
@@ -1223,6 +1227,42 @@ Query：
 - 跨知识库查询接口。
 - GraphRAG 查询接口。
 - 实体抽取、关系抽取、社区摘要接口。
+
+例外：2026-06-21 批准的文档结构化摘要提供以下 Admin 接口，但不提供关系图谱或
+GraphRAG 接口：
+
+- `GET /api/v1/files/{file_id}/summary`：返回当前 parse job 的摘要状态、正文、
+  Chunk 总数、完成数、成功数、失败数、模型和 prompt 版本。
+- `POST /api/v1/files/{file_id}/summary/retry`：Body 为 `{"force": false}`；
+  `false` 仅重试失败/缺失项，`true` 重建当前 active chunks。
+- `GET /api/v1/files/{file_id}/chunks` 的每个 Chunk 增加可空
+  `knowledge_extraction`，用于 Admin 调试完整结构化 JSON。
+
+摘要状态为 `pending | running | completed | partially_completed | failed |
+not_ready`。摘要状态独立于文件解析/索引状态，摘要失败不得把 indexed 文件改为
+failed。
+
+### 文档摘要关系图与社区摘要
+
+- `GET /api/v1/knowledge-graph`
+  - Admin 与普通 User 均可访问。
+  - Query：`knowledge_base_id`、`include_cross_knowledge_base`、
+    `min_similarity`。
+  - 返回文档节点、相似度边、跨库标记、全局构建状态和相关知识库社区摘要。
+  - 同时返回 `total_document_count`、`summarized_document_count`、
+    `pending_summary_count`、`failed_summary_count` 和
+    `not_ready_document_count`，用于区分“图谱节点少”与“文档摘要仍在生成”。
+- `POST /api/v1/knowledge-graph/refresh`
+  - 仅 Admin。
+  - Body：`{"force_embeddings": false}`。
+  - 普通刷新重建关系与变化的社区摘要；`true` 时清空文档摘要向量缓存后重算。
+- `GET /api/v1/knowledge-bases/{knowledge_base_id}/community-summary`
+  - Admin 与普通 User 均可访问 active 知识库。
+  - 返回 `pending | running | completed | failed | not_ready`、社区摘要正文、
+    文档数、模型、prompt 版本和更新时间。
+
+关系图仅使用当前 active 文件的最新 `completed` 或 `partially_completed` 文档
+摘要。跨知识库边只能连接 active 知识库中的可见文件。
 - OpenAI-compatible 对外网关。
 - Text2SQL 接口。
 - 文档级权限接口。

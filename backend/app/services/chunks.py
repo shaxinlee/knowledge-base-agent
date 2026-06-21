@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -8,8 +9,20 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.models import ChunkMetadata, DocumentBlock, File, FileStatus, ParseJob, ParseJobStatus
+from app.models import (
+    ChunkKnowledgeExtraction,
+    ChunkMetadata,
+    DocumentBlock,
+    File,
+    FileStatus,
+    ParseJob,
+    ParseJobStatus,
+)
 from app.schemas.files import ChunkDebugListResponse, ChunkDebugResponse
+from app.services.document_summaries import (
+    enqueue_document_summary,
+    get_chunk_extraction_response,
+)
 from app.services.visual_citations import (
     build_chunk_image_alt,
     build_chunk_image_url,
@@ -22,6 +35,7 @@ from app.services.visual_citations import (
 TARGET_CHUNK_CHARS = 1000
 MAX_CHUNK_CHARS = 1200
 CHUNK_OVERLAP_CHARS = 120
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -92,6 +106,15 @@ def generate_chunks_for_parse_job(db: Session, *, file: File, parse_job: ParseJo
         db.commit()
         return
 
+    db.flush()
+    try:
+        with db.begin_nested():
+            enqueue_document_summary(db, file=file, parse_job=parse_job)
+    except Exception:
+        logger.exception(
+            "Document summary enqueue failed without blocking parse_job_id=%s",
+            parse_job.id,
+        )
     parse_job.status = ParseJobStatus.EMBEDDING.value
     parse_job.progress = 60
     parse_job.logs = merge_chunking_logs(
@@ -319,16 +342,36 @@ def list_chunks(
         .offset((normalized_page - 1) * normalized_page_size)
         .limit(normalized_page_size)
     ).all()
+    extraction_by_chunk_id = {
+        extraction.chunk_id: extraction
+        for extraction in db.scalars(
+            select(ChunkKnowledgeExtraction).where(
+                ChunkKnowledgeExtraction.chunk_id.in_([chunk.id for chunk in chunks])
+            )
+        ).all()
+    }
     file = db.get(File, file_id)
     return ChunkDebugListResponse(
-        items=[build_chunk_response(chunk, file=file) for chunk in chunks],
+        items=[
+            build_chunk_response(
+                chunk,
+                file=file,
+                knowledge_extraction=extraction_by_chunk_id.get(chunk.id),
+            )
+            for chunk in chunks
+        ],
         total=total,
         page=normalized_page,
         page_size=normalized_page_size,
     )
 
 
-def build_chunk_response(chunk: ChunkMetadata, *, file: File | None = None) -> ChunkDebugResponse:
+def build_chunk_response(
+    chunk: ChunkMetadata,
+    *,
+    file: File | None = None,
+    knowledge_extraction: ChunkKnowledgeExtraction | None = None,
+) -> ChunkDebugResponse:
     metadata = dict(chunk.chunk_metadata or {})
     document_block_types = extract_document_block_types(metadata)
     return ChunkDebugResponse(
@@ -348,6 +391,7 @@ def build_chunk_response(chunk: ChunkMetadata, *, file: File | None = None) -> C
         token_count=chunk.token_count or 0,
         is_active=chunk.is_active,
         created_at=chunk.created_at,
+        knowledge_extraction=get_chunk_extraction_response(knowledge_extraction),
     )
 
 

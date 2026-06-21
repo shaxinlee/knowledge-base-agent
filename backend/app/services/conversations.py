@@ -444,14 +444,13 @@ def stream_create_message_events(
             "retrieval",
             {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
         )
-        assistant_content = ""
-        for token in split_stream_text(build_knowledge_overall_answer(overall_content)):
-            safe_token = sanitize_visible_text(token)
-            assistant_content += safe_token
-            if safe_token:
-                yield ("token", {"text": safe_token})
+        assistant_content = sanitize_visible_text(
+            build_knowledge_overall_answer(overall_content)
+        )
+        for token in split_stream_text(assistant_content):
+            if token:
+                yield ("token", {"text": token})
 
-        assistant_content = sanitize_visible_text(assistant_content)
         assistant_message.content = assistant_content
         assistant_message.status = "completed"
         assistant_message.model_name = "knowledge-overall"
@@ -497,7 +496,7 @@ def stream_create_message_events(
             token_source = llm_client.stream_direct_answer(query=augmented_query_text)
             prompt_version = DIRECT_PROMPT_VERSION
         for token in token_source:
-            safe_token = sanitize_visible_text(token)
+            safe_token = sanitize_stream_token(token)
             assistant_content += safe_token
             if safe_token:
                 yield ("token", {"text": safe_token})
@@ -585,13 +584,13 @@ def stream_create_message_events(
             query=augmented_query_text,
             contexts=final_context_items,
         ):
-            safe_token = sanitize_visible_text(token)
+            safe_token = sanitize_stream_token(token)
             assistant_content += safe_token
             if safe_token:
                 yield ("token", {"text": safe_token})
     else:
         for token in split_stream_text(build_refusal_answer()):
-            safe_token = sanitize_visible_text(token)
+            safe_token = sanitize_stream_token(token)
             assistant_content += safe_token
             if safe_token:
                 yield ("token", {"text": safe_token})
@@ -1471,3 +1470,19 @@ def build_citation_response(
 
 def sanitize_visible_text(content: str) -> str:
     return normalize_special_elements(strip_visible_image_references(content))
+
+
+def sanitize_stream_token(content: str) -> str:
+    if not content:
+        return ""
+    if not content.strip():
+        return content
+
+    leading_match = re.match(r"^\s*", content)
+    trailing_match = re.search(r"\s*$", content)
+    leading = leading_match.group(0) if leading_match else ""
+    trailing = trailing_match.group(0) if trailing_match else ""
+    core_start = len(leading)
+    core_end = len(content) - len(trailing) if trailing else len(content)
+    core = content[core_start:core_end]
+    return f"{leading}{sanitize_visible_text(core)}{trailing}"

@@ -28,10 +28,12 @@ from app.models import (
     ChunkMetadata,
     Conversation,
     ConversationStatus,
+    DocumentSummary,
     Feedback,
     File,
     FileStatus,
     KnowledgeBase,
+    KnowledgeBaseCommunitySummary,
     KnowledgeBaseStatus,
     Message,
     MessageAttachment,
@@ -749,6 +751,31 @@ def test_overall_question_reads_knowledge_base_overall_without_similarity_search
                 "indexed_file_count": 1,
             }
         }
+        file = db.scalar(select(File).where(File.knowledge_base_id == knowledge_base_id))
+        assert file is not None
+        parse_job = db.scalar(select(ParseJob).where(ParseJob.file_id == file.id))
+        assert parse_job is not None
+        file.latest_parse_job_id = parse_job.id
+        db.add(
+            DocumentSummary(
+                knowledge_base_id=knowledge_base_id,
+                file_id=file.id,
+                parse_job_id=parse_job.id,
+                status="completed",
+                summary="chat.txt 文档用于验证知识库对话和摘要返回。",
+                chunk_prompt_version="chunk-knowledge-extraction-v1",
+                document_prompt_version="document-summary-v1",
+            )
+        )
+        db.add(
+            KnowledgeBaseCommunitySummary(
+                knowledge_base_id=knowledge_base_id,
+                status="completed",
+                summary="该社区汇总了聊天接口和知识库问答测试资料。",
+                document_count=1,
+                prompt_version="knowledge-base-community-summary-v1",
+            )
+        )
         db.commit()
 
     storage = FakeObjectStorage()
@@ -810,6 +837,8 @@ def test_overall_question_reads_knowledge_base_overall_without_similarity_search
         assistant = message_response.json()["assistant_message"]
         assert "Chat KB 知识库概览" in assistant["content"]
         assert "chat.txt" in assistant["content"]
+        assert "该社区汇总了聊天接口和知识库问答测试资料。" in assistant["content"]
+        assert "chat.txt 文档用于验证知识库对话和摘要返回。" in assistant["content"]
         assert assistant["citations"] == []
         assert embedding_client.requests == []
         assert vector_index_client.searches == []
@@ -823,7 +852,7 @@ def test_overall_question_reads_knowledge_base_overall_without_similarity_search
             trace = db.scalar(select(MessageTrace))
         assert trace is not None
         assert trace.chat_model == "knowledge-overall"
-        assert trace.prompt_version == "knowledge-overall-v1"
+        assert trace.prompt_version == "knowledge-overall-v2"
         assert trace.retrieved_chunk_ids == []
     finally:
         app.dependency_overrides.clear()
@@ -1480,6 +1509,18 @@ def test_stream_overall_question_reads_overall_without_similarity_search() -> No
         assert '"retrieved_count": 0' in text
         assert "Chat KB 知识库概览" in text
         assert '"citations": []' in text
+        streamed_tokens = []
+        for event_block in text.split("\n\n"):
+            if not event_block.startswith("event: token\n"):
+                continue
+            data_line = next(
+                line for line in event_block.splitlines() if line.startswith("data: ")
+            )
+            streamed_tokens.append(json.loads(data_line.removeprefix("data: "))["text"])
+        streamed_answer = "".join(streamed_tokens)
+        assert "\n\n## 知识库社区摘要\n\n" in streamed_answer
+        assert "\n\n## 各文档摘要\n\n" in streamed_answer
+        assert "\n\n### 1. chat.txt\n\n" in streamed_answer
         assert embedding_client.requests == []
         assert vector_index_client.searches == []
         assert reranker_client.requests == []
@@ -1489,9 +1530,16 @@ def test_stream_overall_question_reads_overall_without_similarity_search() -> No
 
         with session_factory() as db:
             trace = db.scalar(select(MessageTrace))
+            assistant_message = db.scalar(
+                select(Message)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
         assert trace is not None
+        assert assistant_message is not None
+        assert "\n\n### 1. chat.txt\n\n" in assistant_message.content
         assert trace.chat_model == "knowledge-overall"
-        assert trace.prompt_version == "knowledge-overall-v1"
+        assert trace.prompt_version == "knowledge-overall-v2"
     finally:
         app.dependency_overrides.clear()
 

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     intent_recognition_max_tokens: int = 800
     knowledge_search_classifier_api_base_url: str = ""
     knowledge_search_classifier_api_key: str = ""
-    knowledge_search_classifier_model: str = "qwen3.6-flash"
+    knowledge_search_classifier_model: str = "qwen3.6-flash-2026-04-16"
     knowledge_search_classifier_timeout_seconds: int = 30
     knowledge_search_classifier_temperature: float = 0.0
     knowledge_search_classifier_max_tokens: int = 32
@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     image_description_enabled: bool = True
     image_description_api_base_url: str = ""
     image_description_api_key: str = ""
-    image_description_model: str = "qwen3.6-flash"
+    image_description_model: str = "qwen3.6-flash-2026-04-16"
     image_description_timeout_seconds: int = 120
     image_description_temperature: float = 0.2
     image_description_max_tokens: int = 800
@@ -99,6 +99,26 @@ class Settings(BaseSettings):
     parse_worker_enabled: bool = True
     parse_worker_poll_interval_seconds: float = 5.0
     parse_worker_batch_size: int = 10
+    document_summary_enabled: bool = True
+    document_summary_worker_poll_interval_seconds: float = 5.0
+    document_summary_document_concurrency: int = 2
+    document_summary_chunk_concurrency: int = 8
+    document_summary_global_request_concurrency: int = 16
+    document_summary_http_max_connections: int = 20
+    document_summary_http_max_keepalive_connections: int = 16
+    document_summary_timeout_seconds: int = 120
+    document_summary_max_attempts: int = 3
+    document_summary_retry_base_delay_seconds: float = 1.0
+    document_summary_temperature: float = 0.0
+    document_summary_chunk_max_tokens: int = 4096
+    document_summary_final_max_tokens: int = 2000
+    document_summary_max_input_tokens: int = 24000
+    knowledge_graph_enabled: bool = True
+    knowledge_graph_worker_poll_interval_seconds: float = 20.0
+    knowledge_graph_similarity_threshold: float = 0.45
+    knowledge_graph_max_relations_per_document: int = 6
+    knowledge_graph_embedding_batch_size: int = 16
+    knowledge_graph_community_concurrency: int = 2
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -112,6 +132,48 @@ class Settings(BaseSettings):
         if value == "":
             return None
         return value
+
+    @model_validator(mode="after")
+    def validate_document_summary_limits(self) -> "Settings":
+        positive_integer_fields = (
+            "document_summary_document_concurrency",
+            "document_summary_chunk_concurrency",
+            "document_summary_global_request_concurrency",
+            "document_summary_http_max_connections",
+            "document_summary_http_max_keepalive_connections",
+            "document_summary_timeout_seconds",
+            "document_summary_max_attempts",
+            "document_summary_chunk_max_tokens",
+            "document_summary_final_max_tokens",
+            "document_summary_max_input_tokens",
+            "knowledge_graph_max_relations_per_document",
+            "knowledge_graph_embedding_batch_size",
+            "knowledge_graph_community_concurrency",
+        )
+        for field_name in positive_integer_fields:
+            if getattr(self, field_name) < 1:
+                raise ValueError(f"{field_name} must be greater than or equal to 1")
+        if (
+            self.document_summary_http_max_connections
+            < self.document_summary_global_request_concurrency
+        ):
+            raise ValueError(
+                "document_summary_http_max_connections must be greater than or equal to "
+                "document_summary_global_request_concurrency"
+            )
+        if self.document_summary_retry_base_delay_seconds < 0:
+            raise ValueError(
+                "document_summary_retry_base_delay_seconds must be greater than or equal to 0"
+            )
+        if self.knowledge_graph_worker_poll_interval_seconds <= 0:
+            raise ValueError(
+                "knowledge_graph_worker_poll_interval_seconds must be greater than 0"
+            )
+        if not 0 <= self.knowledge_graph_similarity_threshold <= 1:
+            raise ValueError(
+                "knowledge_graph_similarity_threshold must be between 0 and 1"
+            )
+        return self
 
 
 @lru_cache

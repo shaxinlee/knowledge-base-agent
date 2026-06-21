@@ -185,6 +185,10 @@ OVERALL_ACTION_KEYWORDS = (
     "资料范围",
     "概览",
     "总览",
+    "讲什么",
+    "讲的什么",
+    "是关于什么",
+    "主要讲什么",
     "overview",
     "catalog",
     "inventory",
@@ -199,6 +203,10 @@ OVERALL_WEAK_KEYWORDS = (
     "大概内容",
     "整体概括",
     "总体概括",
+    "讲什么",
+    "讲的什么",
+    "是关于什么",
+    "主要讲什么",
 )
 
 OVERALL_SUBJECT_KEYWORDS = (
@@ -332,7 +340,8 @@ class LLMKnowledgeSearchRouter:
 - 转人工客服
 - 明显闲聊
 
-如果问题只是在问当前知识库的目录、文件列表、资料范围、整体概览、包含了什么数据，应输出：
+如果问题只是在问当前知识库的目录、文件列表、资料范围、整体概览、包含了什么数据，
+或者“这个知识库讲什么、主要内容是什么、是关于什么”，应输出：
 category=knowledge_base_overall
 
 如果问题是在问具体业务事实、文档内容、制度、流程、产品说明、FAQ、总结某个主题，应输出：
@@ -402,7 +411,7 @@ category=knowledge_base_overall
         model = (
             classifier_settings.model.strip()
             or settings.knowledge_search_classifier_model.strip()
-            or "qwen3.6-flash"
+            or "qwen3.6-flash-2026-04-16"
         )
         if not base_url or not model:
             return KnowledgeSearchDecision(

@@ -5,11 +5,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import File, FileStatus, KnowledgeBase
+from app.models import (
+    DocumentSummary,
+    File,
+    FileStatus,
+    KnowledgeBase,
+    KnowledgeBaseCommunitySummary,
+)
 from app.rag.query_router import is_overall_query
 from app.services.object_storage import ObjectStorage
 
-OVERALL_PROMPT_VERSION = "knowledge-overall-v1"
+OVERALL_PROMPT_VERSION = "knowledge-overall-v2"
+LIVE_SUMMARY_MARKER = "<!-- knowledge-overall-live-summaries -->"
 
 
 def is_knowledge_overall_query(query: str) -> bool:
@@ -86,13 +93,18 @@ def read_knowledge_base_overall(
     bucket = str(overall.get("bucket") or get_settings().normalized_docs_bucket)
     key = str(overall.get("key") or build_overall_storage_key(knowledge_base_id))
     try:
-        return storage.get_object(bucket=bucket, key=key).decode("utf-8")
+        base_content = storage.get_object(bucket=bucket, key=key).decode("utf-8")
     except Exception:
-        return rebuild_knowledge_base_overall(
+        base_content = rebuild_knowledge_base_overall(
             db,
             knowledge_base_id=knowledge_base_id,
             storage=storage,
         )
+    return append_live_summary_context(
+        db,
+        knowledge_base_id=knowledge_base_id,
+        base_content=base_content,
+    )
 
 
 def build_knowledge_overall_answer(overall_content: str) -> str:
@@ -104,6 +116,88 @@ def build_knowledge_overall_answer(overall_content: str) -> str:
 
 def build_overall_storage_key(knowledge_base_id: UUID) -> str:
     return f"knowledge-bases/{knowledge_base_id}/overall.md"
+
+
+def append_live_summary_context(
+    db: Session,
+    *,
+    knowledge_base_id: UUID,
+    base_content: str,
+) -> str:
+    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+    if knowledge_base is None:
+        return base_content
+
+    files = list(
+        db.scalars(
+            select(File)
+            .where(
+                File.knowledge_base_id == knowledge_base_id,
+                File.deleted_at.is_(None),
+            )
+            .order_by(File.created_at.asc(), File.file_name.asc())
+        ).all()
+    )
+    community_summary = db.scalar(
+        select(KnowledgeBaseCommunitySummary).where(
+            KnowledgeBaseCommunitySummary.knowledge_base_id == knowledge_base_id
+        )
+    )
+    summary_rows = db.execute(
+        select(DocumentSummary, File)
+        .join(File, File.id == DocumentSummary.file_id)
+        .where(
+            DocumentSummary.knowledge_base_id == knowledge_base_id,
+            File.deleted_at.is_(None),
+            File.latest_parse_job_id == DocumentSummary.parse_job_id,
+        )
+    ).all()
+    summaries_by_file_id = {
+        file.id: summary
+        for summary, file in summary_rows
+    }
+
+    clean_base = base_content.split(LIVE_SUMMARY_MARKER, maxsplit=1)[0].rstrip()
+    lines = [
+        clean_base,
+        "",
+        LIVE_SUMMARY_MARKER,
+        "",
+        "## 知识库社区摘要",
+        "",
+    ]
+    if community_summary is not None and community_summary.summary:
+        lines.append(community_summary.summary.strip())
+    elif community_summary is not None and community_summary.status in {"pending", "running"}:
+        lines.append("社区摘要正在生成中。")
+    elif community_summary is not None and community_summary.status == "failed":
+        lines.append("社区摘要生成失败，当前先提供各文档摘要。")
+    else:
+        lines.append("当前还没有可用的社区摘要。")
+
+    lines.extend(["", "## 各文档摘要", ""])
+    if not files:
+        lines.append("当前知识库暂无文档。")
+    for index, file in enumerate(files, start=1):
+        summary = summaries_by_file_id.get(file.id)
+        lines.append(f"### {index}. {file.file_name}")
+        lines.append("")
+        if summary is not None and summary.summary:
+            lines.append(summary.summary.strip())
+            if summary.status == "partially_completed":
+                lines.append("")
+                lines.append(
+                    f"注：该摘要基于部分成功 Chunk 生成，"
+                    f"仍有 {summary.chunk_failed} 个 Chunk 未成功。"
+                )
+        elif summary is not None and summary.status in {"pending", "running"}:
+            lines.append("文档摘要正在生成中。")
+        elif summary is not None and summary.status == "failed":
+            lines.append("文档摘要生成失败，暂时没有可用摘要。")
+        else:
+            lines.append("当前文档还没有可用摘要。")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
 
 
 def render_overall_markdown(

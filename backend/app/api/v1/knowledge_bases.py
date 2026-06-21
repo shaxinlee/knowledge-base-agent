@@ -13,6 +13,7 @@ from app.schemas.knowledge_bases import (
     KnowledgeBaseResponse,
     KnowledgeBaseUpdateRequest,
 )
+from app.schemas.knowledge_graph import CommunitySummaryResponse
 from app.services.knowledge_bases import (
     create_knowledge_base,
     delete_knowledge_base,
@@ -21,6 +22,7 @@ from app.services.knowledge_bases import (
     list_knowledge_bases,
     update_knowledge_base,
 )
+from app.services.knowledge_graph import get_community_summary_response
 
 router = APIRouter(prefix="/knowledge-bases", tags=["KnowledgeBases"])
 
@@ -74,6 +76,18 @@ def read_knowledge_base(
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeBaseResponse:
     return get_knowledge_base(db, knowledge_base_id=knowledge_base_id, current_user=current_user)
+
+
+@router.get(
+    "/{knowledge_base_id}/community-summary",
+    response_model=CommunitySummaryResponse,
+)
+def read_knowledge_base_community_summary(
+    knowledge_base_id: UUID,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> CommunitySummaryResponse:
+    return get_community_summary_response(db, knowledge_base_id=knowledge_base_id)
 
 
 @router.patch("/{knowledge_base_id}", response_model=KnowledgeBaseResponse)

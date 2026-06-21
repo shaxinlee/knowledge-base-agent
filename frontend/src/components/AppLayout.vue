@@ -5,6 +5,7 @@ import {
   DataAnalysis,
   FolderOpened,
   Refresh,
+  Share,
   SwitchButton,
   User,
 } from '@element-plus/icons-vue'
@@ -13,6 +14,7 @@ import {
   Bot,
   LogOut,
   MessageCircle,
+  Network,
   Plus,
   RefreshCw,
   UserCircle,
@@ -24,6 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   clearAuthTokens,
   getAccessToken,
+  getCachedCurrentUser,
   getCurrentUser,
   getRefreshToken,
   logout,
@@ -42,6 +45,7 @@ const props = withDefaults(
 const consumerNavItems = [
   { label: '对话问答', path: '/chat', icon: MessageCircle },
   { label: '知识库', path: '/knowledge', icon: BookOpen },
+  { label: '知识地图', path: '/knowledge-map', icon: Network },
   { label: '个人资料', path: '/profile', icon: UserCircle },
 ]
 
@@ -49,6 +53,7 @@ const adminNavItems = [
   { label: '对话问答', path: '/chat', icon: ChatDotRound },
   { label: '知识库管理', path: '/knowledge-bases', icon: Collection },
   { label: '文件管理', path: '/files', icon: FolderOpened },
+  { label: '知识地图', path: '/knowledge-map', icon: Share },
   { label: 'Chunk 调试', path: '/chunks', icon: Collection },
   { label: '用户管理', path: '/users', icon: User },
   { label: '审计日志', path: '/audit-logs', icon: DataAnalysis },
@@ -57,7 +62,8 @@ const adminNavItems = [
 
 const route = useRoute()
 const router = useRouter()
-const currentUser = ref<AuthUser | null>(null)
+const currentUser = ref<AuthUser | null>(getCachedCurrentUser())
+const authReady = ref(Boolean(currentUser.value) || !getAccessToken())
 
 const displayName = computed(
   () => currentUser.value?.display_name || currentUser.value?.username || '未登录',
@@ -82,10 +88,12 @@ const avatarText = computed(() => {
 
 onMounted(async () => {
   if (!getAccessToken()) {
+    authReady.value = true
     return
   }
   try {
     currentUser.value = await getCurrentUser()
+    authReady.value = true
   } catch {
     clearAuthTokens()
     await router.push('/login')
@@ -112,7 +120,18 @@ function reloadPage(): void {
 </script>
 
 <template>
+  <div v-if="!authReady" class="auth-shell-loading" aria-busy="true" aria-label="正在加载用户信息">
+    <aside class="auth-shell-loading__sidebar">
+      <div class="auth-shell-loading__brand"></div>
+      <div v-for="index in 6" :key="index" class="auth-shell-loading__nav"></div>
+    </aside>
+    <div class="auth-shell-loading__body">
+      <div class="auth-shell-loading__topbar"></div>
+      <div class="auth-shell-loading__content"></div>
+    </div>
+  </div>
   <div
+    v-else
     :class="[
       'app-shell',
       isAdmin ? 'admin-shell' : 'consumer-shell',
@@ -208,6 +227,74 @@ function reloadPage(): void {
 </template>
 
 <style scoped>
+.auth-shell-loading {
+  display: grid;
+  grid-template-columns: 174px minmax(0, 1fr);
+  min-height: 100vh;
+  background: #f3f7f5;
+}
+
+.auth-shell-loading__sidebar {
+  padding: 22px 16px;
+  border-right: 1px solid #dce7e2;
+  background: #fff;
+}
+
+.auth-shell-loading__brand,
+.auth-shell-loading__nav,
+.auth-shell-loading__topbar,
+.auth-shell-loading__content {
+  background: linear-gradient(90deg, #e9efec 25%, #f7faf8 50%, #e9efec 75%);
+  background-size: 200% 100%;
+  animation: auth-loading-shimmer 1.2s ease-in-out infinite;
+}
+
+.auth-shell-loading__brand {
+  width: 126px;
+  height: 34px;
+  margin-bottom: 42px;
+  border-radius: 6px;
+}
+
+.auth-shell-loading__nav {
+  height: 34px;
+  margin-bottom: 10px;
+  border-radius: 4px;
+}
+
+.auth-shell-loading__body {
+  min-width: 0;
+}
+
+.auth-shell-loading__topbar {
+  height: 56px;
+  border-bottom: 1px solid #dce7e2;
+}
+
+.auth-shell-loading__content {
+  height: 180px;
+  margin: 28px 20px;
+  border-radius: 6px;
+}
+
+@keyframes auth-loading-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-shell-loading__brand,
+  .auth-shell-loading__nav,
+  .auth-shell-loading__topbar,
+  .auth-shell-loading__content {
+    animation: none;
+  }
+}
+
 .app-shell {
   min-height: 100vh;
   background: var(--ka-background);

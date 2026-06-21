@@ -24,6 +24,10 @@ from app.schemas.files import (
     FileUploadResponse,
     ParseJobResponse,
 )
+from app.schemas.document_summaries import (
+    DocumentSummaryResponse,
+    DocumentSummaryRetryRequest,
+)
 from app.services.files import (
     delete_file,
     get_file,
@@ -32,6 +36,10 @@ from app.services.files import (
     list_files,
     retry_parse_file,
     upload_files,
+)
+from app.services.document_summaries import (
+    get_document_summary_response,
+    retry_document_summary,
 )
 from app.services.file_assets import get_parsed_file_asset, get_raw_file_asset
 from app.services.parse_pipeline import run_parse_job_background
@@ -142,6 +150,29 @@ def read_file_status(
     _admin: User = Depends(require_admin_user),
 ) -> FileStatusResponse:
     return get_file_status(db, file_id=file_id)
+
+
+@router.get("/files/{file_id}/summary", response_model=DocumentSummaryResponse)
+def read_file_summary(
+    file_id: UUID,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin_user),
+) -> DocumentSummaryResponse:
+    return get_document_summary_response(db, file_id=file_id)
+
+
+@router.post(
+    "/files/{file_id}/summary/retry",
+    response_model=DocumentSummaryResponse,
+    status_code=202,
+)
+def retry_file_summary(
+    file_id: UUID,
+    payload: DocumentSummaryRetryRequest,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin_user),
+) -> DocumentSummaryResponse:
+    return retry_document_summary(db, file_id=file_id, force=payload.force)
 
 
 @router.get("/files/{file_id}/chunks", response_model=ChunkDebugListResponse)

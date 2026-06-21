@@ -32,6 +32,10 @@ Step 047 已完成 OpenSearch BM25 中文关键词召回 + IK Analyzer：新增 
 
 Step 048 已完成文件解析/索引后台推进器：上传和重新解析创建 queued parse_job 后由后端后台任务唤醒推进；应用生命周期启动轻量 in-process worker，按间隔扫描 queued/parsing/normalizing/chunking/embedding 任务并推进；`GET /api/v1/files/{file_id}/status` 已恢复为只读查询，不再通过前端轮询触发 MinerU 提交、结果拉取、标准化、切片、embedding 或索引。当前实现不是独立队列系统，但已把推进职责从状态接口中移出，为后续替换为独立 worker/queue 预留边界。
 
+Step 049 已完成文档结构化摘要、并发 Chunk 抽取与历史回填：新增独立摘要表和 worker，复用现有 OpenAI-compatible LLM/vLLM 配置，默认同时处理 2 篇文档、每篇 8 个 Chunk、全局 16 个模型请求；严格校验 JSON schema 与 evidence 原文片段，按 chunk_index 归并并支持超长文档分层摘要、部分完成、断点恢复、Admin 查询/重试 API 和文件管理页摘要抽屉。当前运行数据库 18 个未删除文件已完成任务初始化，其中 16 个有 active chunks 的文档进入可恢复回填，2 个无 active chunks 的文档标记为 not_ready。
+
+Step 050 已完成知识地图、跨知识库文件关联与社区摘要：当前文档摘要通过现有 Embedding 服务生成文档级向量，按余弦相似度、阈值和 Top-K 维护同库及跨库关系；全局图谱和每个知识库社区摘要使用摘要集合指纹自动更新；普通用户与管理员均可访问知识地图页面，管理员额外可刷新关系或强制重算向量。该能力独立于现有 Retrieval/Chat 主链路。
+
 ## 步骤列表
 
 | Step | 名称 | 状态 | 对应进度文件 | 说明 |
@@ -84,6 +88,8 @@ Step 048 已完成文件解析/索引后台推进器：上传和重新解析创�
 | 046 | 真实问答 Reranker、知识库统计与顶部标题修复 | 已完成 | docs/progress/step-046-reranker-kb-stats-and-ui-title-fixes.md | 已修复 DashScope/Qwen reranker API 契约、知识库文件/chunk 统计和顶部硬编码标题 |
 | 047 | OpenSearch BM25 中文关键词召回 + IK Analyzer | 已完成 | docs/progress/step-047-opensearch-bm25-ik-retrieval.md | 已完成 OpenSearch + IK Analyzer 启动、74 个真实 active chunks 回填、中文 analyzer 验证、Retrieval/Chat/SSE/trace smoke 和自动化测试 |
 | 048 | 文件解析/索引后台推进器 | 已完成 | docs/progress/step-048-backend-parse-job-worker.md | 已将 parse_job 推进从状态接口轮询中移出，上传/重试后由后端后台任务和轻量 worker 推进 |
+| 049 | 文档结构化摘要、并发 Chunk 抽取与历史回填 | 已完成 | docs/progress/step-049-document-structured-summaries.md | 已实现严格结构化抽取、单文档 8 路/全局 16 路并发、分层文档摘要、独立状态、Admin API/UI 和 3,408 个历史 Chunk 回填任务 |
+| 050 | 知识地图、跨知识库文件关联与社区摘要 | 已完成 | docs/progress/step-050-knowledge-map-community-summaries.md | 已实现文档摘要向量缓存、余弦 Top-K 关系、跨知识库边、社区摘要自动更新和用户/Admin 知识地图 |
 
 ## 已完成内容
 
@@ -422,7 +428,8 @@ Step 048 已完成文件解析/索引后台推进器：上传和重新解析创�
 - 当前已配置 `MINERU_API_TOKEN`，并已用用户上传的真实 PDF 完成在线解析与 parsed-results 保存。
 - 当前 Qwen `qwen3-vl-embedding` 已通过 DashScope 多模态 embedding endpoint 完成真实 text chunk 向量化，当前向量维度为 2560。
 - 当前 Qwen `qwen3-vl-rerank` 已通过 DashScope text rerank endpoint 完成真实重排验证。
-- 当前 `qwen3.7-plus` 已通过非流式 Chat API smoke 返回带引用回答。
+- 当前生成式、意图识别、知识检索分类和图片描述统一使用
+  `qwen3.6-flash-2026-04-16`；该模型已通过真实非流式 Chat API smoke 验证。
 - 当前 OpenSearch BM25 + IK Analyzer 已完成代码、测试和运行态验证；当前 `测试` 知识库 74 个 active chunks 已写入 `chunks_bm25`，中文关键词检索可返回 `full_text`/`hybrid` 来源并参与带引用问答。
 
 ## 下一步开发建议

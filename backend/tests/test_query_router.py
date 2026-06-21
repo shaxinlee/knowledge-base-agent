@@ -310,6 +310,10 @@ def test_rule_based_knowledge_search_router_routes_overall_question() -> None:
     assert decision.research_base is False
     assert decision.category == "knowledge_base_overall"
 
+    summary_decision = RuleBasedKnowledgeSearchRouter().decide("这个知识库讲什么的？")
+    assert summary_decision.research_base is False
+    assert summary_decision.category == "knowledge_base_overall"
+
 
 def test_rule_based_knowledge_search_router_routes_mixed_question() -> None:
     decision = RuleBasedKnowledgeSearchRouter().decide(

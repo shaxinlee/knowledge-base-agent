@@ -3,6 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.document_summaries import ChunkKnowledgeExtractionResponse
+
 
 class FileResponse(BaseModel):
     id: str
@@ -83,6 +85,7 @@ class ChunkDebugResponse(BaseModel):
     token_count: int
     is_active: bool
     created_at: datetime
+    knowledge_extraction: ChunkKnowledgeExtractionResponse | None = None
 
 
 class ChunkDebugListResponse(BaseModel):

@@ -238,6 +238,138 @@ export interface FileStatusResponse {
   latest_parse_job: ParseJob | null
 }
 
+export type DocumentSummaryStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'partially_completed'
+  | 'failed'
+  | 'not_ready'
+
+export interface ExtractedEntity {
+  name: string
+  normalized_name: string | null
+  type: string
+}
+
+export interface ExtractedAssertion {
+  statement: string
+  statement_type: string
+  subject: string | null
+  predicate: string | null
+  object: string | null
+  conditions: string[]
+  time_scope: string | null
+  polarity: string
+  certainty: string
+  evidence_text: string
+}
+
+export interface ChunkKnowledgeExtractionPayload {
+  chunk_id: string
+  semantic_role: string
+  short_summary: string
+  topics: string[]
+  keywords: string[]
+  entities: ExtractedEntity[]
+  assertions: ExtractedAssertion[]
+  importance: number
+  quality_flags: string[]
+}
+
+export interface ChunkKnowledgeExtraction {
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  extraction: ChunkKnowledgeExtractionPayload | null
+  model_name: string | null
+  prompt_version: string
+  attempt_count: number
+  error_code: string | null
+  error_message: string | null
+}
+
+export interface DocumentSummary {
+  file_id: string
+  parse_job_id: string | null
+  status: DocumentSummaryStatus
+  summary: string | null
+  chunk_total: number
+  chunk_completed: number
+  chunk_succeeded: number
+  chunk_failed: number
+  failed_chunk_ids: string[]
+  model_name: string | null
+  chunk_prompt_version: string
+  document_prompt_version: string
+  reduction_level: number
+  error_code: string | null
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  updated_at: string | null
+}
+
+export type KnowledgeGraphStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type CommunitySummaryStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'not_ready'
+
+export interface KnowledgeGraphNode {
+  id: string
+  file_id: string
+  document_summary_id: string
+  file_name: string
+  file_ext: string
+  knowledge_base_id: string
+  knowledge_base_name: string
+  summary: string
+  summary_status: string
+  relation_count: number
+}
+
+export interface KnowledgeGraphEdge {
+  id: string
+  source: string
+  target: string
+  similarity: number
+  cross_knowledge_base: boolean
+}
+
+export interface CommunitySummary {
+  knowledge_base_id: string
+  knowledge_base_name: string
+  status: CommunitySummaryStatus
+  summary: string | null
+  document_count: number
+  model_name: string | null
+  prompt_version: string
+  reduction_level: number
+  error_code: string | null
+  error_message: string | null
+  updated_at: string | null
+}
+
+export interface KnowledgeGraph {
+  status: KnowledgeGraphStatus
+  source_fingerprint: string | null
+  document_count: number
+  total_document_count: number
+  summarized_document_count: number
+  pending_summary_count: number
+  failed_summary_count: number
+  not_ready_document_count: number
+  relation_count: number
+  embedding_model: string | null
+  similarity_threshold: number
+  max_relations_per_document: number
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  communities: CommunitySummary[]
+  updated_at: string | null
+}
+
 export interface Chunk {
   id: string
   file_id: string
@@ -255,6 +387,7 @@ export interface Chunk {
   token_count: number
   is_active: boolean
   created_at: string
+  knowledge_extraction: ChunkKnowledgeExtraction | null
 }
 
 export interface RetrievalSearchRequest {

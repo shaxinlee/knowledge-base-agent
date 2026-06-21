@@ -7,6 +7,12 @@ import { defineConfig } from 'vite'
 const defaultProxyTarget = existsSync('/.dockerenv')
   ? 'http://backend-api:8000'
   : 'http://localhost:8000'
+const dockerWatch = existsSync('/.dockerenv')
+  ? {
+      usePolling: true,
+      interval: 500,
+    }
+  : undefined
 
 export default defineConfig({
   plugins: [vue()],
@@ -18,6 +24,7 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: dockerWatch,
     proxy: {
       '/api': {
         target: process.env.VITE_DEV_PROXY_TARGET ?? defaultProxyTarget,

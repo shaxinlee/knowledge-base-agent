@@ -46,6 +46,8 @@ Knowledge Base Agent Assistant 是一个面向企业/团队内部知识库的 RA
 - 审计日志：知识库、文件、用户管理等关键操作写入 audit logs，前端展示中文可读操作文案并保留原始 code。
 - 前端页面：Vue + Vite 前端已接入真实 API，包含登录、Chat、文件、chunks、知识库、用户、审计日志、个人资料、403/404 等页面。
 - 多模态基础骨架：已新增 QueryRouter、多标签路由、Qwen 多模态 embedding provider、ImageBlock/Evidence 数据结构和 Weighted RRF evidence 融合测试骨架；图片证据尚未完整接入 Chat 主链路。
+- 文档结构化摘要：active chunks 通过现有 OpenAI-compatible LLM/vLLM 配置并发抽取结构化知识，默认单文档 8 路、全局 16 路，并按 chunk 顺序生成支持分层归并的文档摘要；摘要拥有独立状态、断点恢复、历史回填和管理端查看/重试入口，不阻断现有索引链路。
+- 知识地图与社区摘要：对当前文档摘要复用 Embedding 服务生成文档级向量，通过余弦相似度维护同库/跨库 Top-K 关系；用户和管理员可在知识地图中探索文档节点、关联文件和每个知识库的社区摘要，文档摘要集合变化后后台自动更新。
 
 ### 当前边界
 
