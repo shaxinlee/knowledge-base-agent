@@ -37,3 +37,4 @@ backend/app/config/model_settings.json
 .vscode/
 .DS_Store
 Thumbs.db
+.qoder
