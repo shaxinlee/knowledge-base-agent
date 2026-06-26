@@ -33,7 +33,7 @@ class RetrievalCandidate:
 
 
 RRF_K = 60
-RERANK_CANDIDATE_LIMIT = 20
+RERANK_CANDIDATE_LIMIT = 50
 
 
 def search_knowledge_base(

@@ -70,7 +70,6 @@ interface PendingImageAttachment {
   data_url: string
 }
 
-const VISIBLE_CITATION_LIMIT = 3
 const IMAGE_GALLERY_LIMIT = 12
 const MAX_MESSAGE_IMAGE_SIZE_BYTES = 8 * 1024 * 1024
 const APP_SIDEBAR_WIDTH_KEY = 'kb_agent_chat_app_sidebar_width'
@@ -836,7 +835,7 @@ function normalizeLatexText(content: string): string {
 }
 
 function visibleMessageCitations(message: Message): Citation[] {
-  return message.citations.slice(0, VISIBLE_CITATION_LIMIT)
+  return message.citations
 }
 
 function extractReferencedCitationIndexes(content: string): number[] {
