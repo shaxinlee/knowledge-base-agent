@@ -15,25 +15,29 @@
 
 ## 0. 当前实现与测试状态
 
-本 TDD 仍然是 SDD v0.1 完整 MVP 的测试设计与内测验收基准。当前仓库到 Step 034 为止已经具备第一版基础 Web Demo，并可通过受限 Demo fixture 演示 citation UI，但尚未满足完整 MVP 内测门槛。
+本 TDD 仍然是 SDD v0.1 完整 MVP 的测试设计与内测验收基准。当前仓库到 Step 050 为止已经具备真实 RAG 主链路、文档结构化摘要和知识地图能力，但尚未满足完整 MVP 内测门槛。
 
 当前已验证的基础 Demo 能力：
 
-- Docker Compose 基础栈可运行：frontend、backend-api、PostgreSQL、Redis、Qdrant、MinIO。
+- Docker Compose 基础栈可运行：frontend、backend-api、PostgreSQL、Redis、Qdrant、MinIO、OpenSearch。
 - 后端健康检查可访问：`GET /api/v1/health`。
-- 后端自动化测试在 Step 034 验证通过：`42 passed, 60 warnings`。
-- 前端类型检查和生产构建在 Step 034 验证通过。
+- 后端自动化测试在 Step 050 验证通过：`133 passed`。
+- 前端类型检查和生产构建在 Step 050 验证通过。
 - OpenAPI YAML 可解析，API contract、OpenAPI、前端类型已同步当前主要实现。
-- 前端可操作路径包括登录、当前用户展示、知识库管理、文件上传/状态、用户管理、审计日志、Chat SSE 拒答、feedback。
+- 前端可操作路径包括登录、当前用户展示、知识库管理、文件上传/状态、用户管理、审计日志、Chat SSE 拒答、feedback、知识地图、助手画像与模型设置。
 - 受限 Demo fixture 路线可生成 `Demo Fixture 知识库`、indexed file、chunks 和 Qdrant points，并已通过真实 API smoke 验证 Chat citation 返回。
 - Step 035 已新增 `docs/demo/frontend-acceptance-checklist.md`，并在 Chat 页面补充稳定 `data-testid` selector，用于固化第一版 Demo 前端验收。
 - Step 036 已新增 `docs/demo/first-version-demo-acceptance-report.md`，明确第一版基础 Web Demo 可交付演示，但完整 SDD v0.1 MVP 仍需真实 MinerU、embedding-service、reranker-service、LLM 和真实样本文档端到端验收。
 - Step 043 已新增多模态 QueryRouter、Qwen 多模态 embedding provider 抽象、ImageBlock/Evidence、MultimodalRetriever 骨架和 Weighted RRF 单元测试；该能力当前是可测试基础骨架，尚未接入真实 Chat/Retrieval 主链路。
 - Step 047 已完成 OpenSearch BM25 + IK Analyzer 中文关键词召回实现，保留 PostgreSQL full-text 作为 `BM25_ENABLED=false` fallback；BM25 client、索引接入、检索接入、删除失效、mock 单元测试、OpenSearch/IK 运行态验证、`_cat/plugins`、`_analyze`、真实 74 个 chunks BM25 回填、Retrieval API、非流式 Chat、Chat SSE 和 trace smoke 均已通过。
+- Step 048 已将文件解析/索引推进职责从状态轮询接口迁回后端 in-process worker（`ParseJobWorker`），上传和重解析后自动唤醒推进，状态接口恢复只读；当前 worker 是 backend-api 进程内轻量 worker，不是独立队列系统。
+- Step 049 已完成文档结构化摘要：新增 `chunk_knowledge_extractions` 和 `document_summaries` 表（迁移 `0013`），使用配置的 OpenAI-compatible LLM 对每个 active Chunk 执行有界并发结构化抽取（默认单文档 8 路、全局 16 路），按 `chunk_index` 顺序归并 `short_summary`，超长上下文使用连续批次分层归并，部分失败生成 `partially_completed` 摘要，独立 worker 不阻断文件 embedding/索引/`indexed` 状态；已对运行数据库执行历史回填（3,408 条 Chunk 抽取记录），首篇真实文档 `ADM30528.pdf` 摘要状态为 `completed`；新增 `GET /files/{file_id}/summary` 和 `POST /files/{file_id}/summary/retry` API 及文件管理页摘要抽屉。
+- Step 050 已完成知识地图、跨知识库文件关联与社区摘要：新增 `document_summary_embeddings`、`document_summary_relations`、`knowledge_base_community_summaries` 和 `knowledge_graph_state` 表（迁移 `0014`），使用余弦相似度按阈值（默认 0.45）和每文档 Top-K（默认 6 条）生成无向关系边，支持跨知识库标记，全局指纹自动触发重建；每个 active 知识库维护社区摘要（prompt 版本 `knowledge-base-community-summary-v1`）；新增 `GET /knowledge-graph`、`POST /knowledge-graph/refresh`、`GET /knowledge-bases/{id}/community-summary` API 及 `/knowledge-map` 交互页面（节点拖动、缩放、知识库筛选、跨库边开关、相似度阈值、社区摘要展示、Admin 刷新）；运行态已生成真实文档节点和相似度关系边。
 
 当前尚未解除的完整 MVP 验收缺口：
 
-- 当前真实 MinerU PDF 解析、Qwen embedding、Qdrant 写入、OpenSearch BM25 + IK Analyzer、Qwen reranker、非流式 LLM 带引用回答和 Chat SSE smoke 已通过运行态验证；完整前端浏览器 citation/feedback 路径仍需继续验收。
+- 当前真实 MinerU PDF 解析、Qwen embedding、Qdrant 写入、OpenSearch BM25 + IK Analyzer、Qwen reranker、LLM 带引用回答和 Chat SSE smoke 已通过运行态验证；Chat 已接入真实 LLM、混合检索（向量 + BM25）和 reranker，不再是模板化 Demo 文本；完整前端浏览器 citation/feedback 全路径仍需继续验收。
+- 文档结构化摘要（Step 049）和知识地图/社区摘要（Step 050）已完成实现和运行态验证，包括真实文档摘要 `completed`、真实文档节点和相似度关系边；但摘要/图谱的完整真实样本覆盖和前端交互验收仍需继续。
 - OpenSearch BM25 + IK Analyzer 当前已完成运行态验证：`analysis-ik 2.18.0` 插件可见，`kb_ik_search` 能识别 `井下落鱼`、`可视化工具`、`光电复合缆`、`地面控制工具` 等领域词，`chunks_bm25` 当前写入 74 条真实 active chunk 文档。
 - 当前 Chat 在 fresh Compose 环境中若启用 `BM25_ENABLED=true`，需要 OpenSearch 可用；否则关键词召回/索引会按严格策略失败。
 - 尚未落地 Playwright E2E 自动化测试；当前 Step 035 先提供稳定 selector 和文档化验收清单。
@@ -185,7 +189,7 @@ TEST_FIXTURE_ARCHIVE=/root/.codex/attachments/9a28c783-b898-4c24-900f-e6657fda98
 - embedding-service
 - reranker-service
 
-当前第一版基础 Web Demo 已验证的 Compose 栈包括：
+当前已验证的 Compose 栈包括：
 
 - backend-api
 - frontend
@@ -193,8 +197,9 @@ TEST_FIXTURE_ARCHIVE=/root/.codex/attachments/9a28c783-b898-4c24-900f-e6657fda98
 - Redis
 - Qdrant
 - MinIO
+- OpenSearch
 
-当前 Compose 尚未包含 Celery worker、本地 embedding-service、本地 reranker-service。MinerU、embedding、reranker、LLM 均已按用户确认方向改为 API 化接入。Step 047 已新增并验证 OpenSearch 服务用于 BM25 中文关键词召回，当前本地 dev 栈包含 frontend、backend-api、PostgreSQL、Redis、Qdrant、MinIO、OpenSearch。
+当前 Compose 尚未包含 Celery worker、本地 embedding-service、本地 reranker-service。MinerU、embedding、reranker、LLM 均已按用户确认方向改为 API 化接入。Step 047 已新增并验证 OpenSearch 服务用于 BM25 中文关键词召回，当前本地 dev 栈包含 frontend、backend-api、PostgreSQL、Redis、Qdrant、MinIO、OpenSearch。Step 048 起，文件解析/索引推进、文档结构化摘要和知识地图/社区摘要均由后端 in-process async worker（`ParseJobWorker`、`DocumentSummaryWorker`、`KnowledgeGraphWorker`）在应用生命周期内运行，分别受 `PARSE_WORKER_ENABLED`、`DOCUMENT_SUMMARY_ENABLED`、`KNOWLEDGE_GRAPH_ENABLED` 控制；当前不是独立队列系统，多实例部署时需要进一步引入数据库锁或外部 worker。
 
 ### 4.2 Mock 环境
 
@@ -286,9 +291,9 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 | TDD-FILE-009 | P1 | force 上传 | 对 hash 重复文件使用 `force=true` | 上传成功并创建 parse_job |
 | TDD-FILE-010 | P0 | MinIO 原始文件 | 上传成功后检查 MinIO `raw-files` | 存在原始对象，metadata 可追溯 file_id |
 | TDD-FILE-011 | P1 | 文件列表筛选 | 按 keyword/status 查询文件列表 | 分页、筛选和 total 正确 |
-| TDD-FILE-012 | P0 | 文件删除 | Admin 删除 indexed 文件 | file 软删除，chunks inactive，Qdrant points 失效或清理，写 audit log |
+| TDD-FILE-012 | P0 | 文件删除 | Admin 删除 indexed 文件 | file 软删除，chunks inactive，Qdrant points 失效或清理，BM25 docs 失效，写 audit log |
 
-当前状态：文件上传校验、MinIO raw-files、文件软删除和审计已实现；Step 033 已补齐 indexed 文件删除时 active chunks 置为 inactive，并通过 fake Qdrant client 验证 points payload `is_active=false`。真实 Qdrant 在线删除/失效验证仍依赖真实索引样本文档链路。
+当前状态：文件上传校验、MinIO raw-files、文件软删除和审计已实现；Step 033 已补齐 indexed 文件删除时 active chunks 置为 inactive，并通过 fake Qdrant client 验证 points payload `is_active=false`；Step 047 已补齐文件删除时 BM25 docs 失效。真实 Qdrant/OpenSearch 在线删除/失效验证仍依赖真实索引样本文档链路。
 
 ### 6.5 解析、标准化与 Chunking
 
@@ -304,6 +309,8 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 | TDD-PARSE-008 | P0 | retry-parse | 对 failed 文件调用 retry | 创建新的 parse_job，旧失败日志保留 |
 | TDD-PARSE-009 | P1 | 最新成功产物 | 对同一文件多次解析 | 只有最新成功 job 的产物进入 active 检索 |
 | TDD-PARSE-010 | P1 | token/content hash | 检查 chunks_metadata | token_count、content_hash、is_active 正确 |
+
+当前状态：parse_job 创建、状态流转、source_locator、chunking、retry-parse 和 token/content hash 已实现。Step 048 将状态推进职责从 `GET /files/{file_id}/status` 迁回后端 in-process worker（`ParseJobWorker`），状态接口恢复只读；上传和重解析后由后台任务自动推进 `queued → parsing → normalizing → chunking → embedding → indexed`。
 
 ### 6.6 Embedding、索引与检索
 
@@ -344,7 +351,7 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 | TDD-INDEX-007 | P0 | Reranker 重排 | 执行检索链路 | reranked_chunk_ids 和 reranker_scores 写入 trace |
 | TDD-INDEX-008 | P1 | top_k 截断 | 召回大于 top_k | final_context_count 不超过配置上限 |
 
-当前状态：reranker client 已接入 Retrieval/Chat 的合并结果后重排路径，并记录 `reranker_model`、`reranked_chunk_ids` 和 `{chunk_id: score}` 形式的 `reranker_scores`。Step 047 已实现并验证 BM25/OpenSearch client、索引接入、检索接入和删除失效测试；`TDD-INDEX-003` 已通过真实服务 smoke，当前 `chunks_bm25` 有 74 条真实 active chunk 文档，中文 analyzer 与领域词典验证通过。
+当前状态：reranker client 已接入 Retrieval/Chat 的合并结果后重排路径，并记录 `reranker_model`、`reranked_chunk_ids` 和 `{chunk_id: score}` 形式的 `reranker_scores`。Step 047 已实现并验证 BM25/OpenSearch client、索引接入、检索接入和删除失效测试；`TDD-INDEX-003` 已通过真实服务 smoke，当前 `chunks_bm25` 有 74 条真实 active chunk 文档，中文 analyzer 与领域词典验证通过。Step 049 已实现文档结构化摘要（`TDD-SUM-001` 至 `TDD-SUM-008`）：有界并发、JSON 与 evidence 校验、顺序归并、分层归并、部分失败 `partially_completed`、恢复与幂等、管理端摘要 API 和文件管理页摘要抽屉均已实现并通过自动化测试（130 passed）；运行态已回填 3,408 条 Chunk 抽取记录，首篇真实文档 `ADM30528.pdf` 摘要状态为 `completed`。Step 050 已实现知识地图与社区摘要（`TDD-GRAPH-001` 至 `TDD-GRAPH-008`）：文档摘要向量、余弦相似度关系、跨知识库标记、指纹自动更新、社区摘要、Admin/User 权限、交互页面和失败隔离均已实现并通过自动化测试（133 passed）；运行态已生成真实文档节点和相似度关系边。
 
 ### 6.7 RAG 问答、SSE 与引用
 
@@ -360,7 +367,7 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 | TDD-CHAT-008 | P1 | 网络中断 | 中断 SSE 连接后重新发送 | 前端不崩溃，允许重新提问 |
 | TDD-CHAT-009 | P1 | 用户画像风格 | 修改 answer_style/language 后提问 | 只影响表达风格，不影响事实、引用和证据阈值 |
 
-当前状态：SSE transport、事件顺序、空知识库拒答、message/citation/trace 基础保存已实现；当前 answer 是模板化 Demo 文本，不是真实 LLM 输出。`TDD-CHAT-009` 的用户画像 answer_style/language 偏好尚未接入当前 Demo，当前 Profile 使用 `/api/v1/auth/me` 只读展示。
+当前状态：SSE transport、事件顺序、空知识库拒答、message/citation/trace 基础保存已实现；Chat 已接入真实 LLM、混合检索（向量 + BM25）和 reranker，answer 不再是模板化 Demo 文本。`TDD-CHAT-009` 的助手画像已实现：Admin 可通过 `GET/PATCH /api/v1/assistant-profile` 编辑助手名称、身份、能力、问候、致谢、使用指引、转人工和兜底回答，Chat 的 QueryRouter 使用助手画像回答影响表达风格；Profile 页面还支持 Admin 通过 `GET/PATCH /api/v1/model-settings` 管理 MinerU、LLM、embedding、reranker、意图识别、知识库整体概览分类器和图片描述等运行时模型设置。
 
 建议真实样本查询：
 
@@ -449,8 +456,8 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 2. 后端 health 返回正常。
 3. 前端登录页可访问。
 4. 默认 Admin 可登录并进入主应用。
-5. 知识库、文件、用户、审计、Chat SSE 拒答和 feedback 页面可通过真实 API 操作。
-6. 当前未配置外部服务时，真实解析/索引/带引用回答缺口必须在 Demo 文档和进度文件中明确记录。
+5. 知识库、文件、用户、审计、Chat SSE（含 LLM 带引用回答和拒答）、feedback、知识地图和助手画像/模型设置页面可通过真实 API 操作。
+6. 当前已配置外部服务（MinerU、embedding、reranker、LLM、OpenSearch），真实解析/索引/带引用回答已通过运行态验证；剩余前端浏览器全路径、多模态和完整 RAG 样本评估缺口须在进度文件中明确记录。
 7. 如启用 `DEMO_FIXTURE_ENABLED=true` 并执行 `python -m app.dev.seed_demo_fixture`，可通过受限 Demo fixture 演示 citation UI；该结果不得作为完整真实 RAG 验收。
 8. 第一版 Demo 前端 fixture citation 验收步骤以 `docs/demo/frontend-acceptance-checklist.md` 为准。
 
@@ -467,7 +474,7 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 9. 删除文件后相关 chunks、vectors 和 BM25 documents 不再参与检索。
 10. Admin 高危操作进入 audit_logs。
 
-当前状态：完整 SDD MVP 内测门槛尚未满足。真实 MinerU PDF 解析、Qwen embedding、Qdrant 写入、OpenSearch BM25 + IK Analyzer、Qwen reranker、非流式 LLM 带引用回答和 Chat SSE smoke 已通过运行态验证；但前端浏览器 SSE/citation/feedback 全路径、多模态图片召回和完整 RAG 样本评估仍需继续验收。
+当前状态：完整 SDD MVP 内测门槛尚未满足。真实 MinerU PDF 解析、Qwen embedding、Qdrant 写入、OpenSearch BM25 + IK Analyzer、Qwen reranker、LLM 带引用回答和 Chat SSE smoke 已通过运行态验证；文档结构化摘要（Step 049）和知识地图/社区摘要（Step 050）已完成实现和运行态验证。但前端浏览器 SSE/citation/feedback 全路径、多模态图片召回和完整 RAG 样本评估仍需继续验收。
 
 ### 8.3 发布阻断条件
 
@@ -508,10 +515,10 @@ Mock 环境必须仍然校验数据库写入、状态流转、trace、引用结�
 ## 11. 当前注意事项
 
 1. 当前真实样本包包含 `.doc` 和 `.ppt`，但 SDD v0.1 未列为支持格式；测试应按不支持处理。
-2. 当前项目已完成第一版基础 Web Demo 的主要页面和真实 API 联调；本 TDD 仍是完整 SDD MVP 的后续实现、自动化测试和内测验收基准。
+2. 当前项目已完成真实 RAG 主链路（MinerU 解析、embedding、Qdrant 向量索引、OpenSearch BM25、reranker、LLM 带引用回答、SSE 流式）、文档结构化摘要（Step 049）和知识地图/社区摘要（Step 050）的主要页面和真实 API 联调；本 TDD 仍是完整 SDD MVP 的后续自动化测试和内测验收基准。
 3. 样本包路径位于 Codex 附件目录，不应假设在其他环境一定存在；CI 环境需要单独配置 `TEST_FIXTURE_ARCHIVE`。
 4. 表格文件测试只验证解析、切片、定位和检索，不验证复杂公式、跨表 join、聚合统计或 Text2SQL。
 5. 真实 LLM 输出具有波动性，RAG 测试应优先校验证据链、引用结构、拒答策略和 trace，而不是逐字匹配回答文本。
-6. 当前已验证的自动化测试结果包括：后端 pytest `42 passed, 60 warnings`、前端 typecheck/build 通过、Compose 配置/服务状态/health 检查通过、后端镜像构建通过、Demo fixture 真实 API citation/feedback smoke 通过。
-7. 当前真实外部链路已按 API 化方向补齐 MinerU、embedding、reranker、LLM 配置；OpenSearch BM25 + IK Analyzer 已完成运行态验收并接入混合召回。Step 034 的 Demo fixture 路线只用于历史开发/演示记录，不解除完整 MVP 的真实端到端验收要求。
-8. 当前 API contract 已移除未实现的 `/users/me/profile` active path；Profile 页面使用 `/api/v1/auth/me` 只读展示当前用户。
+6. 当前已验证的自动化测试结果包括：后端 pytest `133 passed`（含文档结构化摘要和知识地图/社区摘要专项测试）、前端 typecheck/build 通过、Compose 配置/服务状态/health 检查通过、后端镜像构建通过、Demo fixture 真实 API citation/feedback smoke 通过。
+7. 当前真实外部链路已按 API 化方向补齐 MinerU、embedding、reranker、LLM 配置；OpenSearch BM25 + IK Analyzer 已完成运行态验收并接入混合召回。Step 048 起文件解析/索引推进、文档结构化摘要和知识地图/社区摘要均由后端 in-process async worker 运行，不依赖 Celery。Step 034 的 Demo fixture 路线只用于历史开发/演示记录，不解除完整 MVP 的真实端到端验收要求。
+8. 当前 API contract 已移除未实现的 `/users/me/profile` active path；Profile 页面使用 `/api/v1/auth/me` 展示当前用户，并支持 Admin 通过 `/api/v1/assistant-profile` 编辑助手画像和 `/api/v1/model-settings` 管理运行时模型设置。

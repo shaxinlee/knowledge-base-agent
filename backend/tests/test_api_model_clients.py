@@ -368,9 +368,10 @@ def test_llm_api_client_generates_answer_with_citation_prompt() -> None:
     assert payload["model"] == "test-chat"
     assert payload["stream"] is False
     assert payload["enable_thinking"] is False
+    assert payload["temperature"] == 0.5
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-    assert "manual.pdf" not in answer.raw_prompt_snapshot
-    assert "pdf:p1" not in answer.raw_prompt_snapshot
+    assert "manual.pdf" in answer.raw_prompt_snapshot
+    assert "pdf:p1" in answer.raw_prompt_snapshot
     assert "Grounding text." in answer.raw_prompt_snapshot
     headers = cast(dict[str, Any], captured["headers"])
     assert headers["authorization"] == "Bearer llm-key"
@@ -424,17 +425,21 @@ def test_llm_api_client_can_enable_thinking_for_answer_generation() -> None:
             {
                 "role": "system",
                 "content": (
-                    "You are a knowledge base assistant. Answer only using the provided context. "
-                    "If the context is insufficient, refuse briefly. Every factual claim must cite "
-                    "the provided citation numbers like [1], [2]. Do not output file paths, image "
-                    "URLs, asset paths, storage paths, file names, pages, raw source locations, raw "
-                    "HTML tags, or raw LaTeX code. Present tables as readable tables and formulas "
-                    "as ordinary mathematical text."
+                    "你是一个知识库问答助手。只能基于提供的上下文回答问题。"
+                    "如果上下文信息不足以回答问题，请简要拒答。"
+                    "每个事实陈述必须标注引用编号，格式如 [1]、[2]。"
+                    "不要输出文件路径、图片 URL、资源路径、存储路径、文件名、页码、原始来源位置、"
+                    "原始 HTML 标签或原始 LaTeX 代码。将表格以可读表格形式呈现，"
+                    "公式以普通数学文本形式呈现。"
                 ),
             },
-            {"role": "user", "content": "Context:\n\n\nQuestion:\nQ\n\nAnswer with citations."},
+            {
+                "role": "user",
+                "content": "上下文：\n\n\n问题：\nQ\n\n请基于上下文回答，并标注引用编号。",
+            },
         ],
         "stream": False,
+        "temperature": 0.5,
         "enable_thinking": True,
         "chat_template_kwargs": {"enable_thinking": True},
     }

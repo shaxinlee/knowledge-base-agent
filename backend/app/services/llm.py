@@ -241,12 +241,12 @@ class TemplateDemoLLMClient:
 
 def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> list[dict[str, str]]:
     system_prompt = (
-        "You are a knowledge base assistant. Answer only using the provided context. "
-        "If the context is insufficient, refuse briefly. Every factual claim must cite "
-        "the provided citation numbers like [1], [2]. Do not output file paths, image "
-        "URLs, asset paths, storage paths, file names, pages, raw source locations, raw "
-        "HTML tags, or raw LaTeX code. Present tables as readable tables and formulas "
-        "as ordinary mathematical text."
+        "你是一个知识库问答助手。只能基于提供的上下文回答问题。"
+        "如果上下文信息不足以回答问题，请简要拒答。"
+        "每个事实陈述必须标注引用编号，格式如 [1]、[2]。"
+        "不要输出文件路径、图片 URL、资源路径、存储路径、文件名、页码、原始来源位置、"
+        "原始 HTML 标签或原始 LaTeX 代码。将表格以可读表格形式呈现，"
+        "公式以普通数学文本形式呈现。"
     )
     context_lines = []
     for index, context in enumerate(contexts, start=1):
@@ -254,16 +254,18 @@ def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> li
             "\n".join(
                 [
                     f"[{index}]",
-                    f"excerpt: {normalize_special_elements(strip_visible_image_references(context.excerpt))}",
+                    f"文件：{context.file_name}",
+                    f"定位：{context.source_locator}",
+                    f"内容：{normalize_special_elements(strip_visible_image_references(context.excerpt))}",
                 ]
             )
         )
     user_prompt = (
-        "Context:\n"
+        "上下文：\n"
         + "\n\n".join(context_lines)
-        + "\n\nQuestion:\n"
+        + "\n\n问题：\n"
         + query
-        + "\n\nAnswer with citations."
+        + "\n\n请基于上下文回答，并标注引用编号。"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -276,10 +278,9 @@ def build_direct_messages(*, query: str) -> list[dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "You are a helpful knowledge base assistant. Answer conversational or "
-                "product-usage questions directly without citing knowledge base sources. "
-                "If the user asks for business facts, policies, product documents, "
-                "procedures, or FAQ content, ask them to provide a knowledge-base question."
+                "你是一个知识库问答助手。请直接回答对话或产品使用类问题，"
+                "不需要引用知识库来源。如果用户询问的是业务事实、制度、产品文档、"
+                "操作流程或 FAQ 内容，请引导用户在知识库中提问。"
             ),
         },
         {"role": "user", "content": query},
@@ -292,11 +293,13 @@ def build_chat_completion_payload(
     messages: Sequence[dict[str, str]],
     stream: bool,
     enable_thinking: bool,
+    temperature: float = 0.5,
 ) -> dict[str, Any]:
     return {
         "model": model,
         "messages": list(messages),
         "stream": stream,
+        "temperature": temperature,
         "enable_thinking": enable_thinking,
         "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }

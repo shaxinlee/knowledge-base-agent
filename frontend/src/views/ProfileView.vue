@@ -3,6 +3,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import {
   BrainCircuit,
   FileSearch,
+  FileText,
   Image,
   KeyRound,
   RefreshCw,
@@ -51,6 +52,7 @@ const assistantProfile = reactive<AssistantProfile>({
 const modelSettings = reactive<ModelSettings>({
   mineru: emptyModelEndpoint(),
   llm: emptyModelEndpoint(),
+  document_summary: emptyModelEndpoint(),
   text_embedding: emptyModelEndpoint(),
   reranker: emptyModelEndpoint(),
   intent_recognition: emptyModelEndpoint(),
@@ -75,6 +77,12 @@ const modelConfigGroups: Array<{
     title: '回答生成 LLM',
     description: '最终问答和直接回复使用的模型，需兼容 Chat Completions 接口。',
     icon: BrainCircuit,
+  },
+  {
+    key: 'document_summary',
+    title: '文档摘要 LLM',
+    description: '逐 Chunk 结构化抽取和文档摘要归并使用的模型，复用 OpenAI-compatible 接口。',
+    icon: FileText,
   },
   {
     key: 'text_embedding',
@@ -235,6 +243,7 @@ function buildModelSettingsPayload(): ModelSettings {
   return {
     mineru: trimModelEndpoint(modelSettings.mineru),
     llm: trimModelEndpoint(modelSettings.llm),
+    document_summary: trimModelEndpoint(modelSettings.document_summary),
     text_embedding: trimModelEndpoint(modelSettings.text_embedding),
     reranker: trimModelEndpoint(modelSettings.reranker),
     intent_recognition: trimModelEndpoint(modelSettings.intent_recognition),

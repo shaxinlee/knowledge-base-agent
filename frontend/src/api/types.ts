@@ -141,6 +141,7 @@ export interface ModelEndpointSettings {
 export interface ModelSettings {
   mineru: ModelEndpointSettings
   llm: ModelEndpointSettings
+  document_summary: ModelEndpointSettings
   text_embedding: ModelEndpointSettings
   reranker: ModelEndpointSettings
   intent_recognition: ModelEndpointSettings
