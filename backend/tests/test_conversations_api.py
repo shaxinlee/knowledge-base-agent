@@ -164,8 +164,20 @@ class FakeLLMClient:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 
-    def generate_answer(self, *, query: str, contexts: Sequence[Any]) -> LLMAnswer:
-        self.requests.append({"query": query, "contexts": list(contexts)})
+    def generate_answer(
+        self,
+        *,
+        query: str,
+        contexts: Sequence[Any],
+        enable_thinking: bool = False,
+    ) -> LLMAnswer:
+        self.requests.append(
+            {
+                "query": query,
+                "contexts": list(contexts),
+                "enable_thinking": enable_thinking,
+            }
+        )
         return LLMAnswer(
             content=f"LLM answer for {query} [1]",
             model=self.model,
@@ -174,12 +186,29 @@ class FakeLLMClient:
             token_usage={"prompt_tokens": 10, "completion_tokens": 5},
         )
 
-    def stream_answer(self, *, query: str, contexts: Sequence[Any]) -> Generator[str, None, None]:
-        answer = self.generate_answer(query=query, contexts=contexts)
+    def stream_answer(
+        self,
+        *,
+        query: str,
+        contexts: Sequence[Any],
+        enable_thinking: bool = False,
+    ) -> Generator[str, None, None]:
+        answer = self.generate_answer(
+            query=query,
+            contexts=contexts,
+            enable_thinking=enable_thinking,
+        )
         yield answer.content
 
-    def generate_direct_answer(self, *, query: str) -> LLMAnswer:
-        self.requests.append({"query": query, "contexts": [], "direct": True})
+    def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer:
+        self.requests.append(
+            {
+                "query": query,
+                "contexts": [],
+                "direct": True,
+                "enable_thinking": enable_thinking,
+            }
+        )
         return LLMAnswer(
             content=f"Direct answer for {query}",
             model=self.model,
@@ -188,8 +217,13 @@ class FakeLLMClient:
             token_usage={"prompt_tokens": 3, "completion_tokens": 2},
         )
 
-    def stream_direct_answer(self, *, query: str) -> Generator[str, None, None]:
-        answer = self.generate_direct_answer(query=query)
+    def stream_direct_answer(
+        self, *, query: str, enable_thinking: bool = False
+    ) -> Generator[str, None, None]:
+        answer = self.generate_direct_answer(
+            query=query,
+            enable_thinking=enable_thinking,
+        )
         yield answer.content
 
 
@@ -895,13 +929,20 @@ def test_classifier_non_research_uses_direct_llm_without_retrieval() -> None:
         message_response = client.post(
             f"/api/v1/conversations/{conversation_id}/messages",
             headers=_headers(token),
-            json={"content": "随便聊聊", "stream": False},
+            json={"content": "随便聊聊", "stream": False, "enable_thinking": True},
         )
         assert message_response.status_code == 200
         assistant = message_response.json()["assistant_message"]
         assert assistant["content"] == "Direct answer for 随便聊聊"
         assert assistant["citations"] == []
-        assert llm_client.requests == [{"query": "随便聊聊", "contexts": [], "direct": True}]
+        assert llm_client.requests == [
+            {
+                "query": "随便聊聊",
+                "contexts": [],
+                "direct": True,
+                "enable_thinking": True,
+            }
+        ]
         assert embedding_client.requests == []
         assert vector_index_client.searches == []
         assert reranker_client.requests == []
@@ -1513,9 +1554,7 @@ def test_stream_overall_question_reads_overall_without_similarity_search() -> No
         for event_block in text.split("\n\n"):
             if not event_block.startswith("event: token\n"):
                 continue
-            data_line = next(
-                line for line in event_block.splitlines() if line.startswith("data: ")
-            )
+            data_line = next(line for line in event_block.splitlines() if line.startswith("data: "))
             streamed_tokens.append(json.loads(data_line.removeprefix("data: "))["text"])
         streamed_answer = "".join(streamed_tokens)
         assert "\n\n## 知识库社区摘要\n\n" in streamed_answer

@@ -31,16 +31,26 @@ class LLMClientProtocol(Protocol):
     prompt_version: str
 
     def generate_answer(
-        self, *, query: str, contexts: Sequence[RetrievalResultItem]
+        self,
+        *,
+        query: str,
+        contexts: Sequence[RetrievalResultItem],
+        enable_thinking: bool = False,
     ) -> LLMAnswer: ...
 
     def stream_answer(
-        self, *, query: str, contexts: Sequence[RetrievalResultItem]
+        self,
+        *,
+        query: str,
+        contexts: Sequence[RetrievalResultItem],
+        enable_thinking: bool = False,
     ) -> Iterator[str]: ...
 
-    def generate_direct_answer(self, *, query: str) -> LLMAnswer: ...
+    def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer: ...
 
-    def stream_direct_answer(self, *, query: str) -> Iterator[str]: ...
+    def stream_direct_answer(
+        self, *, query: str, enable_thinking: bool = False
+    ) -> Iterator[str]: ...
 
 
 class LLMApiClient:
@@ -61,15 +71,20 @@ class LLMApiClient:
         self.timeout_seconds = timeout_seconds
         self.transport = transport
 
-    def generate_answer(self, *, query: str, contexts: Sequence[RetrievalResultItem]) -> LLMAnswer:
+    def generate_answer(
+        self,
+        *,
+        query: str,
+        contexts: Sequence[RetrievalResultItem],
+        enable_thinking: bool = False,
+    ) -> LLMAnswer:
         messages = build_messages(query=query, contexts=contexts)
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "enable_thinking": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
+        payload = build_chat_completion_payload(
+            model=self.model,
+            messages=messages,
+            stream=False,
+            enable_thinking=enable_thinking,
+        )
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
                 response = client.post(
@@ -96,16 +111,19 @@ class LLMApiClient:
         )
 
     def stream_answer(
-        self, *, query: str, contexts: Sequence[RetrievalResultItem]
+        self,
+        *,
+        query: str,
+        contexts: Sequence[RetrievalResultItem],
+        enable_thinking: bool = False,
     ) -> Iterator[str]:
         messages = build_messages(query=query, contexts=contexts)
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-            "enable_thinking": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
+        payload = build_chat_completion_payload(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            enable_thinking=enable_thinking,
+        )
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
                 with client.stream(
@@ -127,15 +145,14 @@ class LLMApiClient:
                 details={"service": "llm-api", "error": str(exc)},
             ) from exc
 
-    def generate_direct_answer(self, *, query: str) -> LLMAnswer:
+    def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer:
         messages = build_direct_messages(query=query)
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "enable_thinking": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
+        payload = build_chat_completion_payload(
+            model=self.model,
+            messages=messages,
+            stream=False,
+            enable_thinking=enable_thinking,
+        )
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
                 response = client.post(
@@ -161,8 +178,8 @@ class LLMApiClient:
             token_usage=parse_token_usage(response_payload),
         )
 
-    def stream_direct_answer(self, *, query: str) -> Iterator[str]:
-        answer = self.generate_direct_answer(query=query)
+    def stream_direct_answer(self, *, query: str, enable_thinking: bool = False) -> Iterator[str]:
+        answer = self.generate_direct_answer(query=query, enable_thinking=enable_thinking)
         for index in range(0, len(answer.content), 16):
             yield answer.content[index : index + 16]
 
@@ -171,7 +188,13 @@ class TemplateDemoLLMClient:
     model = "template-demo"
     prompt_version = DEMO_PROMPT_VERSION
 
-    def generate_answer(self, *, query: str, contexts: Sequence[RetrievalResultItem]) -> LLMAnswer:
+    def generate_answer(
+        self,
+        *,
+        query: str,
+        contexts: Sequence[RetrievalResultItem],
+        enable_thinking: bool = False,
+    ) -> LLMAnswer:
         content = build_template_answer(query=query, contexts=contexts)
         return LLMAnswer(
             content=content,
@@ -185,13 +208,21 @@ class TemplateDemoLLMClient:
         )
 
     def stream_answer(
-        self, *, query: str, contexts: Sequence[RetrievalResultItem]
+        self,
+        *,
+        query: str,
+        contexts: Sequence[RetrievalResultItem],
+        enable_thinking: bool = False,
     ) -> Iterator[str]:
-        answer = self.generate_answer(query=query, contexts=contexts)
+        answer = self.generate_answer(
+            query=query,
+            contexts=contexts,
+            enable_thinking=enable_thinking,
+        )
         for index in range(0, len(answer.content), 16):
             yield answer.content[index : index + 16]
 
-    def generate_direct_answer(self, *, query: str) -> LLMAnswer:
+    def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer:
         messages = build_direct_messages(query=query)
         content = "你好，我是知识库问答助手。你可以直接提问需要查询的知识库内容。"
         return LLMAnswer(
@@ -202,8 +233,8 @@ class TemplateDemoLLMClient:
             token_usage={},
         )
 
-    def stream_direct_answer(self, *, query: str) -> Iterator[str]:
-        answer = self.generate_direct_answer(query=query)
+    def stream_direct_answer(self, *, query: str, enable_thinking: bool = False) -> Iterator[str]:
+        answer = self.generate_direct_answer(query=query, enable_thinking=enable_thinking)
         for index in range(0, len(answer.content), 16):
             yield answer.content[index : index + 16]
 
@@ -253,6 +284,22 @@ def build_direct_messages(*, query: str) -> list[dict[str, str]]:
         },
         {"role": "user", "content": query},
     ]
+
+
+def build_chat_completion_payload(
+    *,
+    model: str,
+    messages: Sequence[dict[str, str]],
+    stream: bool,
+    enable_thinking: bool,
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "messages": list(messages),
+        "stream": stream,
+        "enable_thinking": enable_thinking,
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
+    }
 
 
 def build_template_answer(*, query: str, contexts: Sequence[RetrievalResultItem]) -> str:

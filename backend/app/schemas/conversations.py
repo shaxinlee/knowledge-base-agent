@@ -71,6 +71,7 @@ class ConversationListResponse(BaseModel):
 class MessageCreateRequest(BaseModel):
     content: str = Field(default="", max_length=8000)
     stream: bool = False
+    enable_thinking: bool = False
     attachments: list[MessageAttachmentInput] = Field(default_factory=list, max_length=1)
 
 

@@ -1604,6 +1604,10 @@ components:
         stream:
           type: boolean
           default: false
+        enable_thinking:
+          type: boolean
+          default: false
+          description: Enables thinking mode only for the answer-generation LLM call.
     MessageCreateResponse:
       type: object
       required: [user_message, assistant_message]

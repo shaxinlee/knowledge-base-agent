@@ -479,6 +479,7 @@ export interface ConversationDetail extends Conversation {
 export interface MessageCreateRequest {
   content: string
   stream?: boolean
+  enable_thinking?: boolean
   attachments?: MessageAttachmentInput[]
 }
 

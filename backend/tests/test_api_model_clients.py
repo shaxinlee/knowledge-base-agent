@@ -367,6 +367,8 @@ def test_llm_api_client_generates_answer_with_citation_prompt() -> None:
     payload = cast(dict[str, Any], captured["payload"])
     assert payload["model"] == "test-chat"
     assert payload["stream"] is False
+    assert payload["enable_thinking"] is False
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert "manual.pdf" not in answer.raw_prompt_snapshot
     assert "pdf:p1" not in answer.raw_prompt_snapshot
     assert "Grounding text." in answer.raw_prompt_snapshot
@@ -395,3 +397,44 @@ def test_llm_api_client_streams_openai_compatible_deltas() -> None:
     tokens = list(client.stream_answer(query="Q", contexts=[]))
 
     assert tokens == ["A", "B"]
+
+
+def test_llm_api_client_can_enable_thinking_for_answer_generation() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "Thoughtful answer [1]"}}]},
+        )
+
+    client = LLMApiClient(
+        base_url="https://llm.example/v1",
+        api_key="llm-key",
+        model="test-chat",
+        transport=httpx.MockTransport(handler),
+    )
+
+    client.generate_answer(query="Q", contexts=[], enable_thinking=True)
+
+    assert captured["payload"] == {
+        "model": "test-chat",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a knowledge base assistant. Answer only using the provided context. "
+                    "If the context is insufficient, refuse briefly. Every factual claim must cite "
+                    "the provided citation numbers like [1], [2]. Do not output file paths, image "
+                    "URLs, asset paths, storage paths, file names, pages, raw source locations, raw "
+                    "HTML tags, or raw LaTeX code. Present tables as readable tables and formulas "
+                    "as ordinary mathematical text."
+                ),
+            },
+            {"role": "user", "content": "Context:\n\n\nQuestion:\nQ\n\nAnswer with citations."},
+        ],
+        "stream": False,
+        "enable_thinking": True,
+        "chat_template_kwargs": {"enable_thinking": True},
+    }

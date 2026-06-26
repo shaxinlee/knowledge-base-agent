@@ -117,8 +117,7 @@ export async function getCurrentUser(forceRefresh = false): Promise<User> {
     return currentUserRequest
   }
 
-  let request: Promise<User>
-  request = apiRequest<User>('/auth/me')
+  const request = apiRequest<User>('/auth/me')
     .then((user) => {
       cachedCurrentUser = user
       return user

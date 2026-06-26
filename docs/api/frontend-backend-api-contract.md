@@ -1002,7 +1002,8 @@ Query：
 ```json
 {
   "content": "这个项目的核心方法是什么？",
-  "stream": true
+  "stream": true,
+  "enable_thinking": false
 }
 ```
 
@@ -1013,6 +1014,8 @@ Query：
 - 检索只允许在该 knowledge_base_id 内执行。
 - 回答只能基于最终上下文 chunks。
 - 证据不足必须拒答。
+- `enable_thinking` 仅作用于最终回答生成 LLM 和直接回复 LLM 的 Chat Completions
+  请求；检索、reranker、摘要、知识库整体概览等链路不受该字段影响。默认 `false`。
 - “这个知识库讲什么”“知识库整体概览”“有哪些资料”等整体总结问题走
   `knowledge_base_overall` 路由，不执行相似度 Top-K 检索；回答上下文必须包含
   知识库创建时间、当前社区摘要，以及当前知识库下每个未删除文件的最新文档摘要

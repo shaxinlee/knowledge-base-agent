@@ -104,6 +104,7 @@ const activeConversationId = ref('')
 const conversationSearchQuery = ref('')
 const messages = ref<Message[]>([])
 const composerText = ref('')
+const thinkingEnabled = ref(false)
 const loading = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
@@ -496,6 +497,7 @@ async function sendMessage(): Promise<void> {
       {
         content,
         stream: true,
+        enable_thinking: thinkingEnabled.value,
         attachments: imageAttachment ? [buildMessageAttachmentInput(imageAttachment)] : [],
       },
       {
@@ -1432,16 +1434,40 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                 <span>图片</span>
               </button>
             </div>
-            <el-button
-              type="primary"
-              data-testid="send-message-button"
-              :disabled="!canSend"
-              :loading="sending"
-              @click="sendMessage"
-            >
-              发送
-              <Send class="lucide-icon" />
-            </el-button>
+            <div class="composer-actions">
+              <div :class="['thinking-control', thinkingEnabled ? 'is-on' : '']">
+                <button
+                  type="button"
+                  :class="['thinking-toggle', thinkingEnabled ? 'is-on' : '']"
+                  :aria-pressed="thinkingEnabled"
+                  :aria-label="thinkingEnabled ? '关闭深度思考模式' : '开启深度思考模式'"
+                  :title="thinkingEnabled ? '深度思考模式' : '快速模式'"
+                  data-testid="thinking-mode-toggle"
+                  @click="thinkingEnabled = !thinkingEnabled"
+                >
+                  <span class="thinking-toggle-track" aria-hidden="true">
+                    <span class="thinking-toggle-glow"></span>
+                    <span class="thinking-toggle-thumb">
+                      <Sparkles class="thinking-toggle-icon" />
+                    </span>
+                  </span>
+                </button>
+                <span class="thinking-mode-label">
+                  {{ thinkingEnabled ? '深度思考模式' : '快速模式' }}
+                </span>
+              </div>
+              <el-button
+                class="composer-send-button"
+                type="primary"
+                data-testid="send-message-button"
+                :disabled="!canSend"
+                :loading="sending"
+                aria-label="发送"
+                @click="sendMessage"
+              >
+                <Send class="lucide-icon" />
+              </el-button>
+            </div>
           </div>
         </div>
         <p class="ai-note">回答基于当前知识库检索结果，请核实重要信息。</p>
@@ -2305,6 +2331,124 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
   font-size: 22px;
 }
 
+.composer-actions {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.thinking-control {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 150px;
+}
+
+.thinking-mode-label {
+  display: inline-block;
+  min-width: 86px;
+  color: var(--ka-text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: color 0.18s ease;
+}
+
+.thinking-control.is-on .thinking-mode-label {
+  color: var(--ka-text);
+}
+
+.thinking-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.thinking-toggle:focus-visible {
+  outline: 2px solid var(--ka-primary);
+  outline-offset: 3px;
+}
+
+.thinking-toggle-track {
+  position: relative;
+  display: block;
+  width: 52px;
+  height: 30px;
+  overflow: hidden;
+  border: 1px solid var(--ka-border);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: inset 0 1px 2px rgb(16 24 40 / 8%);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.thinking-toggle-glow {
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: rgb(96 165 250 / 0%);
+  filter: blur(7px);
+  transform: translateY(-50%) scale(0.7);
+  transition:
+    background 0.18s ease,
+    transform 0.22s ease;
+}
+
+.thinking-toggle-thumb {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: #18181b;
+  box-shadow: 0 4px 10px rgb(16 24 40 / 16%);
+  transition:
+    color 0.18s ease,
+    background 0.18s ease,
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.thinking-toggle-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.thinking-toggle.is-on .thinking-toggle-track {
+  border-color: #fff;
+  background: #fff;
+  box-shadow:
+    inset 0 1px 2px rgb(16 24 40 / 10%),
+    0 0 0 3px rgb(255 255 255 / 18%);
+}
+
+.thinking-toggle.is-on .thinking-toggle-glow {
+  background: rgb(255 255 255 / 88%);
+  transform: translate(22px, -50%) scale(1.7);
+}
+
+.thinking-toggle.is-on .thinking-toggle-thumb {
+  color: #fff;
+  background: #18181b;
+  transform: translateX(22px);
+}
+
 .image-input {
   display: none;
 }
@@ -2926,19 +3070,21 @@ blockquote {
 .composer {
   width: min(100%, 900px);
   min-height: 142px;
-  padding: 14px;
-  border-color: #27272a;
-  border-radius: 18px;
-  color: #fff;
-  background: #18181b;
-  box-shadow: 0 18px 44px rgb(24 24 27 / 18%);
+  padding: 16px 14px 12px;
+  border-color: #e4e4e7;
+  border-radius: 26px;
+  color: #18181b;
+  background: #fff;
+  box-shadow:
+    0 18px 42px rgb(24 24 27 / 8%),
+    0 1px 2px rgb(24 24 27 / 8%);
   backdrop-filter: none;
 }
 
 .composer textarea {
-  color: #fff;
-  background: #18181b;
-  font-size: 15px;
+  color: #18181b;
+  background: #fff;
+  font-size: 16px;
   line-height: 1.6;
 }
 
@@ -2948,7 +3094,7 @@ blockquote {
 
 .composer-footer {
   padding-top: 12px;
-  border-top: 1px solid #27272a;
+  border-top: 1px solid #e4e4e7;
 }
 
 .composer-tool-button {
@@ -2958,11 +3104,12 @@ blockquote {
   width: auto;
   min-height: 34px;
   padding: 0 10px;
-  border: 1px solid #27272a;
-  border-radius: 10px;
-  color: #a1a1aa;
-  background: #18181b;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #18181b;
+  background: #fff;
   font-size: 13px;
+  font-weight: 500;
   transition:
     color 0.16s ease,
     background 0.16s ease,
@@ -2970,24 +3117,124 @@ blockquote {
 }
 
 .composer-tool-button:hover {
+  color: #18181b;
+  border-color: #e4e4e7;
+  background: #f4f4f5;
+}
+
+.composer-actions {
+  gap: 10px;
+}
+
+.thinking-control {
+  min-width: 154px;
+}
+
+.thinking-mode-label {
+  min-width: 88px;
+  color: #52525b;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.thinking-control.is-on .thinking-mode-label {
+  color: #18181b;
+}
+
+.thinking-toggle {
+  width: 60px;
+  height: 36px;
+}
+
+.thinking-toggle-track {
+  width: 54px;
+  height: 32px;
+  border-color: #d4d4d8;
+  background: #f4f4f5;
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 14%),
+    0 0 0 1px rgb(24 24 27 / 5%);
+}
+
+.thinking-toggle:hover .thinking-toggle-track {
+  border-color: #a1a1aa;
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 14%),
+    0 0 0 3px rgb(24 24 27 / 6%);
+}
+
+.thinking-toggle-thumb {
+  top: 4px;
+  left: 4px;
+  width: 22px;
+  height: 22px;
   color: #fff;
-  border-color: #3f3f46;
-  background: #27272a;
+  background: #18181b;
+  box-shadow:
+    0 5px 12px rgb(0 0 0 / 30%),
+    inset 0 1px 0 rgb(255 255 255 / 10%);
+}
+
+.thinking-toggle.is-on .thinking-toggle-track {
+  border-color: #d4d4d8;
+  background: #f4f4f5;
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 14%),
+    0 0 0 3px rgb(24 24 27 / 7%);
+}
+
+.thinking-toggle.is-on .thinking-toggle-glow {
+  transform: translate(22px, -50%) scale(1.8);
+}
+
+.thinking-toggle.is-on .thinking-toggle-thumb {
+  color: #fff;
+  background: #18181b;
+  transform: translateX(22px);
 }
 
 .composer :deep(.el-button--primary) {
-  --el-button-bg-color: #fff;
-  --el-button-border-color: #fff;
-  --el-button-text-color: #18181b;
-  --el-button-hover-bg-color: #e4e4e7;
-  --el-button-hover-border-color: #e4e4e7;
-  --el-button-hover-text-color: #18181b;
-  min-height: 36px;
+  --el-button-bg-color: #8c8c8c;
+  --el-button-border-color: #8c8c8c;
+  --el-button-text-color: #fff;
+  --el-button-hover-bg-color: #18181b;
+  --el-button-hover-border-color: #18181b;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-bg-color: #18181b;
+  --el-button-active-border-color: #18181b;
+  --el-button-active-text-color: #fff;
+  --el-button-disabled-bg-color: #8c8c8c;
+  --el-button-disabled-border-color: #8c8c8c;
+  --el-button-disabled-text-color: #fff;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
   border-radius: 999px;
+  box-shadow: none;
+  font-weight: 600;
 }
 
-.composer :deep(.el-button.is-disabled) {
-  opacity: 0.5;
+.composer :deep(.el-button--primary .lucide-icon) {
+  width: 18px;
+  height: 18px;
+  color: #fff;
+  stroke: currentColor;
+}
+
+.composer :deep(.el-button--primary.is-disabled),
+.composer :deep(.el-button--primary.is-disabled:hover),
+.composer :deep(.el-button--primary.is-disabled:focus) {
+  color: #fff;
+  border-color: #8c8c8c;
+  background: #8c8c8c;
+  opacity: 0.72;
+}
+
+.composer :deep(.el-button--primary.is-disabled .lucide-icon) {
+  color: #fff;
+  stroke: currentColor;
 }
 
 .pending-attachment {
@@ -3079,6 +3326,14 @@ blockquote {
 
   .composer {
     border-radius: 16px;
+  }
+
+  .composer-footer {
+    gap: 12px;
+  }
+
+  .composer-actions {
+    flex: 0 0 auto;
   }
 }
 </style>

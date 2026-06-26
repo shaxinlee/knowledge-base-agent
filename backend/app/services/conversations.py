@@ -277,7 +277,10 @@ def create_message(
             raw_prompt_snapshot = None
             token_usage = {}
         else:
-            llm_answer = llm_client.generate_direct_answer(query=message_context.query_text)
+            llm_answer = llm_client.generate_direct_answer(
+                query=message_context.query_text,
+                enable_thinking=payload.enable_thinking,
+            )
             assistant_content = sanitize_visible_text(llm_answer.content)
             chat_model = llm_answer.model
             prompt_version = llm_answer.prompt_version
@@ -287,6 +290,7 @@ def create_message(
         llm_answer = llm_client.generate_answer(
             query=message_context.query_text,
             contexts=message_context.final_context_items,
+            enable_thinking=payload.enable_thinking,
         )
         assistant_content = sanitize_visible_text(llm_answer.content)
         chat_model = llm_answer.model
@@ -352,9 +356,11 @@ def create_message(
                 )
                 for index, citation in enumerate(citation_rows)
             ],
-            visual_result_mode=message_context.route_decision.visual_result_mode
-            if message_context.route_decision
-            else None,
+            visual_result_mode=(
+                message_context.route_decision.visual_result_mode
+                if message_context.route_decision
+                else None
+            ),
         ),
     )
 
@@ -444,9 +450,7 @@ def stream_create_message_events(
             "retrieval",
             {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
         )
-        assistant_content = sanitize_visible_text(
-            build_knowledge_overall_answer(overall_content)
-        )
+        assistant_content = sanitize_visible_text(build_knowledge_overall_answer(overall_content))
         for token in split_stream_text(assistant_content):
             if token:
                 yield ("token", {"text": token})
@@ -493,7 +497,10 @@ def stream_create_message_events(
             token_source = split_stream_text(knowledge_search_decision.direct_answer)
             prompt_version = "assistant-profile-v1"
         else:
-            token_source = llm_client.stream_direct_answer(query=augmented_query_text)
+            token_source = llm_client.stream_direct_answer(
+                query=augmented_query_text,
+                enable_thinking=payload.enable_thinking,
+            )
             prompt_version = DIRECT_PROMPT_VERSION
         for token in token_source:
             safe_token = sanitize_stream_token(token)
@@ -583,6 +590,7 @@ def stream_create_message_events(
         for token in llm_client.stream_answer(
             query=augmented_query_text,
             contexts=final_context_items,
+            enable_thinking=payload.enable_thinking,
         ):
             safe_token = sanitize_stream_token(token)
             assistant_content += safe_token
@@ -853,7 +861,9 @@ def save_message_trace(
     raw_prompt_snapshot: str | None,
 ) -> None:
     final_context_chunk_ids = [item.chunk_id for item in final_context_items]
-    final_cited_chunk_ids = [item.chunk_id for item in get_citable_context_items(final_context_items)]
+    final_cited_chunk_ids = [
+        item.chunk_id for item in get_citable_context_items(final_context_items)
+    ]
     db.add(
         MessageTrace(
             message_id=assistant_message.id,
@@ -1056,8 +1066,10 @@ def build_routed_retrieval_request(
 ) -> RetrievalSearchRequest:
     enabled_routes = [route for route in route_decision.routes if route.enabled]
     max_route_top_k = max((route.top_k for route in enabled_routes), default=30)
-    final_top_k = 12 if route_decision.visual_result_mode == "gallery" else (
-        10 if route_decision.answer_policy.must_return_visual else 8
+    final_top_k = (
+        12
+        if route_decision.visual_result_mode == "gallery"
+        else (10 if route_decision.answer_policy.must_return_visual else 8)
     )
     return RetrievalSearchRequest(
         query=query,
@@ -1364,10 +1376,14 @@ def get_message_attachment_asset(
         .where(MessageAttachment.id == attachment_id, MessageAttachment.message_id == message_id)
     ).one_or_none()
     if row is None:
-        raise ApiError(code="RESOURCE_NOT_FOUND", message="Attachment was not found.", status_code=404)
+        raise ApiError(
+            code="RESOURCE_NOT_FOUND", message="Attachment was not found.", status_code=404
+        )
     attachment, _message, conversation = row
     if conversation.user_id != current_user.id or conversation.deleted_at is not None:
-        raise ApiError(code="RESOURCE_NOT_FOUND", message="Attachment was not found.", status_code=404)
+        raise ApiError(
+            code="RESOURCE_NOT_FOUND", message="Attachment was not found.", status_code=404
+        )
     return (
         storage.get_object(bucket=attachment.storage_bucket, key=attachment.storage_key),
         attachment.media_type,
