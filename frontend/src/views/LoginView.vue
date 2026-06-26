@@ -26,7 +26,8 @@ interface CharacterPosition {
 const route = useRoute()
 const router = useRouter()
 
-const loginMode = ref<LoginMode>('admin')
+const initialLoginMode = route.query.mode === 'user' ? 'user' : 'admin'
+const loginMode = ref<LoginMode>(initialLoginMode)
 const username = ref('admin')
 const password = ref('AdminPassword123')
 const selectedUsername = ref('')
@@ -201,6 +202,9 @@ onMounted(() => {
   scheduleBlink('purple')
   scheduleBlink('black')
   void loadPublicSummary()
+  if (loginMode.value === 'user') {
+    void loadConsumerUsers()
+  }
 })
 
 onBeforeUnmount(() => {

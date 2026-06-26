@@ -7,7 +7,7 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/login',
+      redirect: { name: 'login', query: { mode: 'user' } },
     },
     {
       path: '/login',
@@ -88,7 +88,13 @@ router.beforeEach(async (to) => {
 
   if (!token) {
     if (requiresAuth) {
-      return { name: 'login', query: { redirect: to.fullPath } }
+      return {
+        name: 'login',
+        query: {
+          redirect: to.fullPath,
+          mode: to.meta.requiresAdmin ? 'admin' : 'user',
+        },
+      }
     }
     return true
   }
@@ -108,7 +114,13 @@ router.beforeEach(async (to) => {
   } catch {
     clearAuthTokens()
     if (requiresAuth) {
-      return { name: 'login', query: { redirect: to.fullPath } }
+      return {
+        name: 'login',
+        query: {
+          redirect: to.fullPath,
+          mode: to.meta.requiresAdmin ? 'admin' : 'user',
+        },
+      }
     }
     return true
   }
