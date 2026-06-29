@@ -78,7 +78,7 @@ const APP_SIDEBAR_WIDTH_KEY = 'kb_agent_chat_app_sidebar_width'
 const CONVERSATION_PANEL_WIDTH_KEY = 'kb_agent_chat_conversation_panel_width'
 const CITATION_PANEL_WIDTH_KEY = 'kb_agent_chat_citation_panel_width'
 const CITATION_PANEL_OPEN_KEY = 'kb_agent_chat_citation_panel_open'
-const APP_SIDEBAR_MIN_WIDTH = 76
+const APP_SIDEBAR_MIN_WIDTH = 220
 const APP_SIDEBAR_MAX_WIDTH = 360
 const CONVERSATION_PANEL_MIN_WIDTH = 280
 const CONVERSATION_PANEL_MAX_WIDTH = 560
@@ -730,14 +730,25 @@ function syncFeedbackState(items: Message[]): void {
 function isWaitingMessage(message: Message): boolean {
   return (
     message.role === 'assistant' &&
-    message.id === streamingAssistantMessageId.value &&
+    isStreamingMessage(message) &&
     message.content.length === 0 &&
     !getThinkingContent(message)
   )
 }
 
+function isStreamingMessage(message: Message): boolean {
+  return message.id === streamingAssistantMessageId.value
+}
+
 function getThinkingContent(message: Message): string {
-  return message.thinking_content ?? ''
+  if (message.role !== 'assistant') {
+    return ''
+  }
+  const extractedThinking = extractThinkTaggedContent(message.content).thinkingContent
+  return [message.thinking_content ?? '', extractedThinking]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('\n\n')
 }
 
 function isThinkingExpanded(message: Message): boolean {
@@ -755,7 +766,8 @@ function displayMessageLines(message: Message): string[] {
   if (message.role !== 'assistant') {
     return normalizeSpecialDisplayText(message.content).split('\n')
   }
-  return stripMarkdownImageLines(normalizeSpecialDisplayText(message.content))
+  const answerContent = extractThinkTaggedContent(message.content).answerContent
+  return stripMarkdownImageLines(normalizeSpecialDisplayText(answerContent))
 }
 
 function displayMessageContent(message: Message): string {
@@ -794,6 +806,30 @@ function isStandaloneMarkdownImageMarker(line: string): boolean {
 function isStandaloneImagePathLine(line: string): boolean {
   const normalized = line.replace(/^\(/, '').replace(/\)$/, '').trim().toLocaleLowerCase()
   return /^images\/.+\.(jpg|jpeg|png|webp|gif|bmp)(\?.*)?$/.test(normalized)
+}
+
+function extractThinkTaggedContent(content: string): {
+  answerContent: string
+  thinkingContent: string
+} {
+  const thinkingParts: string[] = []
+  let answerContent = content.replace(
+    /<\s*think\b[^>]*>([\s\S]*?)<\s*\/\s*think\s*>/gi,
+    (_match, thinking: string) => {
+      thinkingParts.push(thinking)
+      return ''
+    },
+  )
+  const openThinkMatch = /<\s*think\b[^>]*>/i.exec(answerContent)
+  if (openThinkMatch) {
+    const thinkingStart = openThinkMatch.index + openThinkMatch[0].length
+    thinkingParts.push(answerContent.slice(thinkingStart))
+    answerContent = answerContent.slice(0, openThinkMatch.index)
+  }
+  return {
+    answerContent,
+    thinkingContent: thinkingParts.join('\n\n'),
+  }
 }
 
 function normalizeSpecialDisplayText(content: string): string {
@@ -1338,11 +1374,10 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                     :class="[
                       'thinking-block',
                       isThinkingExpanded(message) ? 'is-expanded' : 'is-collapsed',
-                      message.id === streamingAssistantMessageId.value ? 'is-streaming' : '',
+                      isStreamingMessage(message) ? 'is-streaming' : '',
                     ]"
                   >
                     <button
-                      v-if="message.id !== streamingAssistantMessageId.value"
                       type="button"
                       class="thinking-block-header"
                       :aria-expanded="isThinkingExpanded(message)"
@@ -1350,23 +1385,19 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                       @click="toggleThinkingExpanded(message)"
                     >
                       <Brain class="thinking-block-icon" />
-                      <span class="thinking-block-title">深度思考</span>
-                      <ChevronRight class="thinking-block-chevron" />
-                    </button>
-                    <div v-else class="thinking-block-header thinking-block-streaming">
-                      <Brain class="thinking-block-icon" />
-                      <span class="thinking-block-title">正在深度思考...</span>
-                      <span class="thinking-block-dots" aria-hidden="true">
+                      <span class="thinking-block-title">
+                        {{ isStreamingMessage(message) ? 'Thinking...' : 'Thinking' }}
+                      </span>
+                      <span
+                        v-if="isStreamingMessage(message)"
+                        class="thinking-block-dots"
+                        aria-hidden="true"
+                      >
                         <span></span><span></span><span></span>
                       </span>
-                    </div>
-                    <div
-                      v-if="
-                        isThinkingExpanded(message) ||
-                        message.id === streamingAssistantMessageId.value
-                      "
-                      class="thinking-block-body"
-                    >
+                      <ChevronRight class="thinking-block-chevron" />
+                    </button>
+                    <div v-if="isThinkingExpanded(message)" class="thinking-block-body">
                       <MarkdownContent
                         :content="getThinkingContent(message)"
                         :normalize-text="normalizeSpecialDisplayText"
@@ -1531,7 +1562,7 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                 type="primary"
                 data-testid="send-message-button"
                 :disabled="!canSend"
-                :loading="sending"
+                :aria-busy="sending"
                 aria-label="发送"
                 @click="sendMessage"
               >
@@ -2244,14 +2275,6 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
 .thinking-block-header:focus-visible {
   outline: 2px solid var(--ka-primary);
   outline-offset: -2px;
-}
-
-.thinking-block-streaming {
-  cursor: default;
-}
-
-.thinking-block-streaming:hover {
-  background: transparent;
 }
 
 .thinking-block-icon {

@@ -324,6 +324,10 @@ function reloadPage(): void {
   background: #fafafa;
 }
 
+.admin-shell {
+  --ka-admin-sidebar-width: max(var(--ka-sidebar-width), var(--ka-sidebar-min-width));
+}
+
 .consumer-chat-shell {
   --consumer-sidebar-width: 360px;
 }
@@ -336,7 +340,7 @@ function reloadPage(): void {
   left: 0;
   display: flex;
   flex-direction: column;
-  width: var(--ka-sidebar-width);
+  width: var(--ka-admin-sidebar-width, var(--ka-sidebar-width));
   border-right: 1px solid var(--ka-border);
   background: var(--ka-surface);
 }
@@ -592,7 +596,7 @@ button.top-logout {
   z-index: 15;
   top: 0;
   right: 0;
-  left: var(--ka-sidebar-width);
+  left: var(--ka-admin-sidebar-width, var(--ka-sidebar-width));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -722,7 +726,7 @@ button.top-logout {
 
 .app-main {
   min-height: 100vh;
-  margin-left: var(--ka-sidebar-width);
+  margin-left: var(--ka-admin-sidebar-width, var(--ka-sidebar-width));
   padding-top: var(--ka-header-height);
 }
 

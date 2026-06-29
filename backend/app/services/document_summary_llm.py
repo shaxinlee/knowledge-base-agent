@@ -243,7 +243,8 @@ class DocumentSummaryLLMClient:
                             "stream": False,
                             "temperature": self.settings.document_summary_temperature,
                             "max_tokens": max_tokens,
-                            "extra_body": {"enable_thinking": False},
+                            "enable_thinking": False,
+                            "chat_template_kwargs": {"enable_thinking": False},
                         },
                     )
                 if response.status_code == 429 or response.status_code >= 500:

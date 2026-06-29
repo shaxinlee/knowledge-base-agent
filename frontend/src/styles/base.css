@@ -18,6 +18,7 @@
   --ka-success: #16835f;
   --ka-warning: #b45309;
   --ka-error: #c24135;
+  --ka-sidebar-min-width: 220px;
   --ka-sidebar-width: 220px;
   --ka-header-height: 60px;
   color: var(--ka-text);
