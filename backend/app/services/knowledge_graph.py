@@ -6,6 +6,7 @@ from collections import defaultdict
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import delete, or_, select
@@ -33,6 +34,7 @@ from app.schemas.knowledge_graph import (
     KnowledgeGraphResponse,
 )
 from app.services.document_summary_llm import (
+    COMMUNITY_MERGE_PROMPT_VERSION,
     COMMUNITY_PROMPT_VERSION,
     DocumentSummaryLLMClient,
     DocumentSummaryLLMError,
@@ -473,7 +475,7 @@ def prepare_community_updates(
     session_factory: sessionmaker[Session],
     *,
     documents: list[GraphDocument],
-) -> list[tuple[UUID, str, list[GraphDocument], str]]:
+) -> list[tuple[UUID, str, list[GraphDocument], str, set[str]]]:
     grouped: dict[UUID, list[GraphDocument]] = defaultdict(list)
     for document in documents:
         grouped[document.knowledge_base_id].append(document)
@@ -486,7 +488,7 @@ def prepare_community_updates(
                 )
             ).all()
         )
-        updates: list[tuple[UUID, str, list[GraphDocument], str]] = []
+        updates: list[tuple[UUID, str, list[GraphDocument], str, set[str]]] = []
         for knowledge_base in knowledge_bases:
             kb_documents = grouped.get(knowledge_base.id, [])
             fingerprint = build_community_fingerprint(kb_documents)
@@ -496,6 +498,7 @@ def prepare_community_updates(
                     == knowledge_base.id
                 )
             )
+            prev_merged_ids: set[str] = set()
             if row is None:
                 row = KnowledgeBaseCommunitySummary(
                     knowledge_base_id=knowledge_base.id,
@@ -504,10 +507,15 @@ def prepare_community_updates(
                 )
                 db.add(row)
                 db.flush()
+            elif isinstance(row.merged_summary_ids, list):
+                prev_merged_ids = {
+                    str(item) for item in row.merged_summary_ids if item is not None
+                }
             if not kb_documents:
                 row.status = CommunitySummaryStatus.NOT_READY.value
                 row.document_count = 0
                 row.source_fingerprint = fingerprint
+                row.merged_summary_ids = None
                 row.error_code = None
                 row.error_message = None
                 continue
@@ -523,7 +531,13 @@ def prepare_community_updates(
             row.error_code = None
             row.error_message = None
             updates.append(
-                (knowledge_base.id, knowledge_base.name, kb_documents, fingerprint)
+                (
+                    knowledge_base.id,
+                    knowledge_base.name,
+                    kb_documents,
+                    fingerprint,
+                    prev_merged_ids,
+                )
             )
         db.commit()
         return updates
@@ -537,6 +551,8 @@ def save_community_success(
     summary_text: str,
     model_name: str,
     reduction_level: int,
+    prompt_version: str = COMMUNITY_PROMPT_VERSION,
+    merged_summary_ids: list[str] | None = None,
 ) -> None:
     with session_factory() as db:
         row = db.scalar(
@@ -550,12 +566,26 @@ def save_community_success(
         row.summary = summary_text
         row.source_fingerprint = fingerprint
         row.model_name = model_name
-        row.prompt_version = COMMUNITY_PROMPT_VERSION
+        row.prompt_version = prompt_version
         row.reduction_level = reduction_level
+        row.merged_summary_ids = merged_summary_ids
         row.error_code = None
         row.error_message = None
         row.finished_at = datetime.now(UTC)
         db.commit()
+
+
+def _load_existing_community_row(
+    session_factory: sessionmaker[Session],
+    *,
+    knowledge_base_id: UUID,
+) -> Optional[KnowledgeBaseCommunitySummary]:
+    with session_factory() as db:
+        return db.scalar(
+            select(KnowledgeBaseCommunitySummary).where(
+                KnowledgeBaseCommunitySummary.knowledge_base_id == knowledge_base_id
+            )
+        )
 
 
 def save_community_failure(
@@ -603,9 +633,10 @@ async def update_community_summaries(
         _knowledge_base_name: str,
         kb_documents: list[GraphDocument],
         fingerprint: str,
+        prev_merged_ids: set[str],
     ) -> bool:
         async with semaphore:
-            sources = [
+            all_sources = [
                 SummarySource(
                     chunk_id=str(document.file_id),
                     section_path=document.file_name,
@@ -614,10 +645,39 @@ async def update_community_summaries(
                 )
                 for document in kb_documents
             ]
+            new_indices = [
+                i
+                for i, document in enumerate(kb_documents)
+                if str(document.summary_id) not in prev_merged_ids
+            ]
+            new_sources = [all_sources[i] for i in new_indices]
             try:
-                summary_text, reduction_level = await llm_client.summarize_community(
-                    sources
+                existing_row = await asyncio.to_thread(
+                    _load_existing_community_row,
+                    session_factory,
+                    knowledge_base_id=knowledge_base_id,
                 )
+                existing_summary = (
+                    existing_row.summary
+                    if existing_row is not None and existing_row.summary
+                    else None
+                )
+                prompt_version = COMMUNITY_PROMPT_VERSION
+                if (
+                    existing_summary
+                    and prev_merged_ids
+                    and 0 < len(new_sources) < len(all_sources)
+                ):
+                    summary_text, reduction_level = await llm_client.merge_community(
+                        existing_summary=existing_summary,
+                        new_sources=new_sources,
+                    )
+                    prompt_version = COMMUNITY_MERGE_PROMPT_VERSION
+                else:
+                    summary_text, reduction_level = await llm_client.summarize_community(
+                        all_sources
+                    )
+                merged_ids = {str(doc.summary_id) for doc in kb_documents}
                 await asyncio.to_thread(
                     save_community_success,
                     session_factory,
@@ -626,6 +686,8 @@ async def update_community_summaries(
                     summary_text=summary_text,
                     model_name=llm_client.model,
                     reduction_level=reduction_level,
+                    prompt_version=prompt_version,
+                    merged_summary_ids=sorted(merged_ids),
                 )
                 return True
             except DocumentSummaryLLMError as exc:

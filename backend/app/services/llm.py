@@ -44,13 +44,13 @@ class LLMClientProtocol(Protocol):
         query: str,
         contexts: Sequence[RetrievalResultItem],
         enable_thinking: bool = False,
-    ) -> Iterator[str]: ...
+    ) -> Iterator[tuple[str, str]]: ...
 
     def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer: ...
 
     def stream_direct_answer(
         self, *, query: str, enable_thinking: bool = False
-    ) -> Iterator[str]: ...
+    ) -> Iterator[tuple[str, str]]: ...
 
 
 class LLMApiClient:
@@ -116,7 +116,7 @@ class LLMApiClient:
         query: str,
         contexts: Sequence[RetrievalResultItem],
         enable_thinking: bool = False,
-    ) -> Iterator[str]:
+    ) -> Iterator[tuple[str, str]]:
         messages = build_messages(query=query, contexts=contexts)
         payload = build_chat_completion_payload(
             model=self.model,
@@ -134,9 +134,15 @@ class LLMApiClient:
                 ) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
-                        token = parse_sse_token(line)
-                        if token:
-                            yield token
+                        event = parse_sse_token(line)
+                        if not event:
+                            continue
+                        reasoning = event.get("reasoning")
+                        if reasoning:
+                            yield ("thinking", reasoning)
+                        content = event.get("content")
+                        if content:
+                            yield ("content", content)
         except httpx.HTTPError as exc:
             raise ApiError(
                 code="UPSTREAM_SERVICE_ERROR",
@@ -178,10 +184,42 @@ class LLMApiClient:
             token_usage=parse_token_usage(response_payload),
         )
 
-    def stream_direct_answer(self, *, query: str, enable_thinking: bool = False) -> Iterator[str]:
-        answer = self.generate_direct_answer(query=query, enable_thinking=enable_thinking)
-        for index in range(0, len(answer.content), 16):
-            yield answer.content[index : index + 16]
+    def stream_direct_answer(
+        self, *, query: str, enable_thinking: bool = False
+    ) -> Iterator[tuple[str, str]]:
+        messages = build_direct_messages(query=query)
+        payload = build_chat_completion_payload(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            enable_thinking=enable_thinking,
+        )
+        try:
+            with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
+                with client.stream(
+                    "POST",
+                    build_chat_completions_url(self.base_url),
+                    headers=build_llm_headers(self.api_key),
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        event = parse_sse_token(line)
+                        if not event:
+                            continue
+                        reasoning = event.get("reasoning")
+                        if reasoning:
+                            yield ("thinking", reasoning)
+                        content = event.get("content")
+                        if content:
+                            yield ("content", content)
+        except httpx.HTTPError as exc:
+            raise ApiError(
+                code="UPSTREAM_SERVICE_ERROR",
+                message="LLM API stream request failed.",
+                status_code=502,
+                details={"service": "llm-api", "error": str(exc)},
+            ) from exc
 
 
 class TemplateDemoLLMClient:
@@ -213,14 +251,14 @@ class TemplateDemoLLMClient:
         query: str,
         contexts: Sequence[RetrievalResultItem],
         enable_thinking: bool = False,
-    ) -> Iterator[str]:
+    ) -> Iterator[tuple[str, str]]:
         answer = self.generate_answer(
             query=query,
             contexts=contexts,
             enable_thinking=enable_thinking,
         )
         for index in range(0, len(answer.content), 16):
-            yield answer.content[index : index + 16]
+            yield ("content", answer.content[index : index + 16])
 
     def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer:
         messages = build_direct_messages(query=query)
@@ -233,17 +271,19 @@ class TemplateDemoLLMClient:
             token_usage={},
         )
 
-    def stream_direct_answer(self, *, query: str, enable_thinking: bool = False) -> Iterator[str]:
+    def stream_direct_answer(self, *, query: str, enable_thinking: bool = False) -> Iterator[tuple[str, str]]:
         answer = self.generate_direct_answer(query=query, enable_thinking=enable_thinking)
         for index in range(0, len(answer.content), 16):
-            yield answer.content[index : index + 16]
+            yield ("content", answer.content[index : index + 16])
 
 
 def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> list[dict[str, str]]:
     system_prompt = (
         "你是一个知识库问答助手。只能基于提供的上下文回答问题。"
-        "如果上下文信息不足以回答问题，请简要拒答。"
+        "如果上下文信息不足以回答问题，请回复：'当前知识库中没有找到足够依据回答该问题。'"
+        "禁止使用上下文中没有出现过的事实或数字。"
         "每个事实陈述必须标注引用编号，格式如 [1]、[2]。"
+        "引用编号必须与上下文中 [N] 的 N 完全一致，不允许跳号或错配。"
         "不要输出文件路径、图片 URL、资源路径、存储路径、文件名、页码、原始来源位置、"
         "原始 HTML 标签或原始 LaTeX 代码。将表格以可读表格形式呈现，"
         "公式以普通数学文本形式呈现。"
@@ -251,21 +291,18 @@ def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> li
     context_lines = []
     for index, context in enumerate(contexts, start=1):
         context_lines.append(
-            "\n".join(
-                [
-                    f"[{index}]",
-                    f"文件：{context.file_name}",
-                    f"定位：{context.source_locator}",
-                    f"内容：{normalize_special_elements(strip_visible_image_references(context.excerpt))}",
-                ]
-            )
+            f'<context id="{index}">\n'
+            f"文件：{context.file_name}\n"
+            f"定位：{context.source_locator}\n"
+            f"内容：{normalize_special_elements(strip_visible_image_references(context.excerpt))}\n"
+            f"</context>"
         )
     user_prompt = (
-        "上下文：\n"
+        "以下是检索到的相关上下文：\n\n"
         + "\n\n".join(context_lines)
         + "\n\n问题：\n"
         + query
-        + "\n\n请基于上下文回答，并标注引用编号。"
+        + "\n\n请先列出相关引用编号，再基于上下文组织回答，并标注引用编号。"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -364,7 +401,7 @@ def parse_token_usage(payload: Any) -> dict[str, Any]:
     return {}
 
 
-def parse_sse_token(line: str) -> str | None:
+def parse_sse_token(line: str) -> dict[str, str | None] | None:
     if not line.startswith("data:"):
         return None
     data = line.removeprefix("data:").strip()
@@ -381,10 +418,19 @@ def parse_sse_token(line: str) -> str | None:
     if not isinstance(first_choice, dict):
         return None
     delta = first_choice.get("delta")
-    content = delta.get("content") if isinstance(delta, dict) else None
-    if isinstance(content, str):
-        return content
-    return None
+    if not isinstance(delta, dict):
+        return None
+    content = delta.get("content")
+    reasoning = delta.get("reasoning_content")
+    if reasoning is None:
+        reasoning = delta.get("reasoning")
+    if not isinstance(content, str):
+        content = None
+    if not isinstance(reasoning, str):
+        reasoning = None
+    if content is None and reasoning is None:
+        return None
+    return {"content": content, "reasoning": reasoning}
 
 
 def invalid_llm_response() -> ApiError:

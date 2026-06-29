@@ -178,9 +178,11 @@ def append_live_summary_context(
     lines.extend(["", "## 各文档摘要", ""])
     if not files:
         lines.append("当前知识库暂无文档。")
+    summary_index = 0
     for index, file in enumerate(files, start=1):
         summary = summaries_by_file_id.get(file.id)
-        lines.append(f"### {index}. {file.file_name}")
+        summary_index += 1
+        lines.append(f"{summary_index}. **{file.file_name}**")
         lines.append("")
         if summary is not None and summary.summary:
             lines.append(summary.summary.strip())
@@ -205,33 +207,22 @@ def render_overall_markdown(
     knowledge_base: KnowledgeBase,
     files: list[File],
 ) -> str:
+    indexed_files = [f for f in files if f.status == FileStatus.INDEXED.value]
+    file_names = [f.file_name for f in indexed_files[:20]]
+
     lines = [
-        f"# {knowledge_base.name} 知识库概览",
+        f"本知识库「{knowledge_base.name}」存储的内容概览：",
         "",
-        f"知识库创建时间 {format_overall_datetime(knowledge_base.created_at)}",
-        "",
-        f"文件数量 {len(files)}",
-        "",
-        "知识库包含的文件：",
-        "",
-        "| 序号 | 文件名称 | 文件添加时间 |",
-        "| ---: | --- | --- |",
     ]
-    if not files:
-        lines.append("| - | 暂无文件 | - |")
-    for index, file in enumerate(files, start=1):
-        lines.append(
-            "| "
-            f"{index} | "
-            f"{escape_markdown_table_cell(file.file_name)} | "
-            f"{format_overall_datetime(file.created_at)} |"
-        )
+    if not file_names:
+        lines.append("当前知识库暂无已索引的文件。")
+    else:
+        lines.append(f"共 {len(indexed_files)} 个文件，主要内容如下：")
+        lines.append("")
+        for index, name in enumerate(file_names, start=1):
+            lines.append(f"{index}. {name}")
+        if len(indexed_files) > 20:
+            lines.append(f"... 等共 {len(indexed_files)} 个文件")
     return "\n".join(lines).strip() + "\n"
 
 
-def format_overall_datetime(value: datetime) -> str:
-    return value.isoformat()
-
-
-def escape_markdown_table_cell(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")

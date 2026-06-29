@@ -397,7 +397,7 @@ def test_llm_api_client_streams_openai_compatible_deltas() -> None:
 
     tokens = list(client.stream_answer(query="Q", contexts=[]))
 
-    assert tokens == ["A", "B"]
+    assert tokens == [("content", "A"), ("content", "B")]
 
 
 def test_llm_api_client_can_enable_thinking_for_answer_generation() -> None:

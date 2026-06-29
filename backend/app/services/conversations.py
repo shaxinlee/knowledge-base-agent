@@ -81,6 +81,7 @@ class MessageContext:
     route_decision: RouteDecision | None
     retrieval_items: list[RetrievalResultItem]
     final_context_items: list[RetrievalResultItem]
+    enable_thinking: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,7 +268,11 @@ def create_message(
             assistant_message=build_message_response(assistant_message, []),
         )
 
-    if not message_context.knowledge_search_decision.research_base:
+    if (
+        not message_context.knowledge_search_decision.research_base
+        and message_context.knowledge_search_decision.category
+        in {"identity", "capability", "greeting", "thanks", "casual", "handoff"}
+    ):
         if message_context.knowledge_search_decision.direct_answer:
             assistant_content = sanitize_visible_text(
                 message_context.knowledge_search_decision.direct_answer
@@ -277,7 +282,10 @@ def create_message(
             raw_prompt_snapshot = None
             token_usage = {}
         else:
-            llm_answer = llm_client.generate_direct_answer(query=message_context.query_text)
+            llm_answer = llm_client.generate_direct_answer(
+                query=message_context.query_text,
+                enable_thinking=message_context.enable_thinking,
+            )
             assistant_content = sanitize_visible_text(llm_answer.content)
             chat_model = llm_answer.model
             prompt_version = llm_answer.prompt_version
@@ -287,6 +295,7 @@ def create_message(
         llm_answer = llm_client.generate_answer(
             query=message_context.query_text,
             contexts=message_context.final_context_items,
+            enable_thinking=message_context.enable_thinking,
         )
         assistant_content = sanitize_visible_text(llm_answer.content)
         chat_model = llm_answer.model
@@ -482,24 +491,38 @@ def stream_create_message_events(
         )
         return
 
-    if not knowledge_search_decision.research_base:
+    if (
+        not knowledge_search_decision.research_base
+        and knowledge_search_decision.category
+        in {"identity", "capability", "greeting", "thanks", "casual", "handoff"}
+    ):
         yield (
             "retrieval",
             {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
         )
         assistant_content = ""
-        token_source: Iterator[str]
+        token_source: Iterator[tuple[str, str]]
         if knowledge_search_decision.direct_answer:
-            token_source = split_stream_text(knowledge_search_decision.direct_answer)
+            token_source = (
+                ("content", chunk)
+                for chunk in split_stream_text(knowledge_search_decision.direct_answer)
+            )
             prompt_version = "assistant-profile-v1"
         else:
-            token_source = llm_client.stream_direct_answer(query=augmented_query_text)
+            token_source = llm_client.stream_direct_answer(
+                query=augmented_query_text,
+                enable_thinking=payload.enable_thinking,
+            )
             prompt_version = DIRECT_PROMPT_VERSION
-        for token in token_source:
-            safe_token = sanitize_stream_token(token)
-            assistant_content += safe_token
-            if safe_token:
-                yield ("token", {"text": safe_token})
+        for kind, text in token_source:
+            if kind == "thinking":
+                yield ("thinking", {"text": text})
+                continue
+            if kind == "content":
+                safe_token = sanitize_stream_token(text)
+                assistant_content += safe_token
+                if safe_token:
+                    yield ("token", {"text": safe_token})
 
         assistant_content = sanitize_visible_text(assistant_content)
         assistant_message.content = assistant_content
@@ -580,14 +603,19 @@ def stream_create_message_events(
 
     assistant_content = ""
     if final_context_items:
-        for token in llm_client.stream_answer(
+        for kind, text in llm_client.stream_answer(
             query=augmented_query_text,
             contexts=final_context_items,
+            enable_thinking=payload.enable_thinking,
         ):
-            safe_token = sanitize_stream_token(token)
-            assistant_content += safe_token
-            if safe_token:
-                yield ("token", {"text": safe_token})
+            if kind == "thinking":
+                yield ("thinking", {"text": text})
+                continue
+            if kind == "content":
+                safe_token = sanitize_stream_token(text)
+                assistant_content += safe_token
+                if safe_token:
+                    yield ("token", {"text": safe_token})
     else:
         for token in split_stream_text(build_refusal_answer()):
             safe_token = sanitize_stream_token(token)
@@ -713,9 +741,18 @@ def prepare_message_context(
             route_decision=None,
             retrieval_items=[],
             final_context_items=[],
+            enable_thinking=payload.enable_thinking,
         )
 
-    if not knowledge_search_decision.research_base:
+    # Only the six safe non-research categories (identity, capability, greeting,
+    # thanks, casual, handoff) may bypass the knowledge base. Everything else —
+    # including "usage" and the classifier's "llm_direct" — falls through to the
+    # RAG pipeline below so factual/product-usage questions stay grounded.
+    if (
+        not knowledge_search_decision.research_base
+        and knowledge_search_decision.category
+        in {"identity", "capability", "greeting", "thanks", "casual", "handoff"}
+    ):
         return MessageContext(
             conversation=conversation,
             user_message=user_message,
@@ -726,6 +763,7 @@ def prepare_message_context(
             route_decision=None,
             retrieval_items=[],
             final_context_items=[],
+            enable_thinking=payload.enable_thinking,
         )
 
     route_decision = query_router.route(augmented_query_text)
@@ -773,6 +811,7 @@ def prepare_message_context(
         route_decision=route_decision,
         retrieval_items=list(retrieval_response.items),
         final_context_items=final_context_items,
+        enable_thinking=payload.enable_thinking,
     )
 
 
@@ -1241,12 +1280,18 @@ def collect_section_chunks(
         return [hit_chunk]
 
     start_index = hit_index
-    while start_index > 0 and chunks[start_index - 1].heading_path == hit_chunk.heading_path:
+    while (
+        start_index > 0
+        and chunks[start_index - 1].heading_path == hit_chunk.heading_path
+        and (hit_index - start_index) < 3
+    ):
         start_index -= 1
 
     end_index = hit_index
     while (
-        end_index + 1 < len(chunks) and chunks[end_index + 1].heading_path == hit_chunk.heading_path
+        end_index + 1 < len(chunks)
+        and chunks[end_index + 1].heading_path == hit_chunk.heading_path
+        and (end_index - hit_index) < 3
     ):
         end_index += 1
 

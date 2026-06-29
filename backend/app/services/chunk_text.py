@@ -3,13 +3,15 @@ from app.services.visual_citations import chunk_has_image_source, strip_visible_
 
 
 def build_indexable_chunk_text(chunk: ChunkMetadata) -> str:
-    if not chunk_has_image_source(chunk):
-        return chunk.content
-    parts = [
-        chunk.description,
-        strip_visible_image_references(chunk.content),
+    parts: list[str | None] = [
         " > ".join(chunk.heading_path or []),
         chunk.source_locator,
+        chunk.description if chunk_has_image_source(chunk) else None,
+        (
+            strip_visible_image_references(chunk.content)
+            if chunk_has_image_source(chunk)
+            else chunk.content
+        ),
     ]
     return join_unique_text_parts(parts) or chunk.content
 

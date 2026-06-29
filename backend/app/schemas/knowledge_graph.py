@@ -30,6 +30,7 @@ class CommunitySummaryResponse(BaseModel):
     knowledge_base_name: str
     status: Literal["pending", "running", "completed", "failed", "not_ready"]
     summary: str | None = None
+    per_document: dict[str, str | list[dict[str, str]]] | None = None
     document_count: int = 0
     model_name: str | None = None
     prompt_version: str

@@ -15,6 +15,7 @@ from app.services.model_settings import get_model_settings
 CHUNK_PROMPT_VERSION = "chunk-summary-v2"
 DOCUMENT_PROMPT_VERSION = "document-summary-v1"
 COMMUNITY_PROMPT_VERSION = "knowledge-base-community-summary-v1"
+COMMUNITY_MERGE_PROMPT_VERSION = "knowledge-base-community-summary-v2-merge"
 
 CHUNK_SYSTEM_PROMPT = """请用最简短的语句总结以下 Chunk 的核心内容。
 
@@ -36,6 +37,15 @@ DOCUMENT_SYSTEM_PROMPT = """你是一个通用文档摘要器。只能依据输�
 
 COMMUNITY_SYSTEM_PROMPT = """你是知识库社区摘要生成器。请根据输入的多个文档短摘要，生成该社区/主题的概括性摘要。
 使用 1~3 句连贯的中文，涵盖主要主题和核心信息。"""
+
+COMMUNITY_MERGE_SYSTEM_PROMPT = """你是知识库社区摘要生成器。你将收到该知识库现有的社区摘要，以及新上传文档的摘要。
+请把新文档的关键信息融合进现有社区摘要，输出一条更新后的社区摘要。
+
+要求：
+1. 保持简洁，使用 1~3 句连贯的中文。
+2. 保留现有摘要的核心信息，同时整合新文档的关键主题。
+3. 不得引入外部知识，仅依据提供的摘要内容。
+4. 直接输出更新后的摘要文本，不要任何解释、前缀或 Markdown。"""
 
 
 @dataclass(frozen=True)
@@ -145,6 +155,16 @@ class DocumentSummaryLLMClient:
     ) -> tuple[str, int]:
         return await self._summarize_community_sources(sources)
 
+    async def merge_community(
+        self,
+        *,
+        existing_summary: str,
+        new_sources: Sequence[SummarySource],
+    ) -> tuple[str, int]:
+        return await self._merge_community_sources(
+            existing_summary=existing_summary, new_sources=new_sources
+        )
+
     async def _summarize_sources(
         self,
         sources: Sequence[SummarySource],
@@ -180,6 +200,29 @@ class DocumentSummaryLLMClient:
                 "The model returned an empty community summary.",
             )
         return normalized, 1
+
+    async def _merge_community_sources(
+        self,
+        *,
+        existing_summary: str,
+        new_sources: Sequence[SummarySource],
+        instruction: str = "请把新文档摘要融合进现有社区摘要。",
+    ) -> tuple[str, int]:
+        content, attempts = await self._complete(
+            messages=build_community_merge_messages(
+                existing_summary=existing_summary,
+                new_sources=new_sources,
+                instruction=instruction,
+            ),
+            max_tokens=self.settings.document_summary_final_max_tokens,
+        )
+        normalized = content.strip()
+        if not normalized:
+            raise DocumentSummaryLLMError(
+                "EMPTY_COMMUNITY_SUMMARY",
+                "The model returned an empty community summary.",
+            )
+        return normalized, 2
 
     async def _complete(
         self,
@@ -294,6 +337,26 @@ def build_community_messages(
     user_prompt = f"以下是同一社区/主题的多个文档摘要。请生成一条概括性摘要。\n\n{chunks_text}"
     return [
         {"role": "system", "content": COMMUNITY_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def build_community_merge_messages(
+    *,
+    existing_summary: str,
+    new_sources: Sequence[SummarySource],
+    instruction: str,
+) -> list[dict[str, str]]:
+    new_chunks_text = "\n\n---\n\n".join(
+        f"[新文档 {i+1}] {s.short_summary}" for i, s in enumerate(new_sources)
+    )
+    user_prompt = (
+        f"{instruction}\n\n"
+        f"【现有社区摘要】\n{existing_summary.strip()}\n\n"
+        f"【新上传的文档摘要】\n{new_chunks_text}"
+    )
+    return [
+        {"role": "system", "content": COMMUNITY_MERGE_SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
 

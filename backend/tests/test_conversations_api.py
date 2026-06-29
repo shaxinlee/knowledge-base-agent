@@ -192,13 +192,13 @@ class FakeLLMClient:
         query: str,
         contexts: Sequence[Any],
         enable_thinking: bool = False,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[tuple[str, str], None, None]:
         answer = self.generate_answer(
             query=query,
             contexts=contexts,
             enable_thinking=enable_thinking,
         )
-        yield answer.content
+        yield ("content", answer.content)
 
     def generate_direct_answer(self, *, query: str, enable_thinking: bool = False) -> LLMAnswer:
         self.requests.append(
@@ -219,12 +219,12 @@ class FakeLLMClient:
 
     def stream_direct_answer(
         self, *, query: str, enable_thinking: bool = False
-    ) -> Generator[str, None, None]:
+    ) -> Generator[tuple[str, str], None, None]:
         answer = self.generate_direct_answer(
             query=query,
             enable_thinking=enable_thinking,
         )
-        yield answer.content
+        yield ("content", answer.content)
 
 
 class FakeQueryRouter:

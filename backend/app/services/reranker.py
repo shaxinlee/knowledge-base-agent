@@ -72,7 +72,7 @@ class RerankerClient:
                 url = f"{url}/score"
         payload = {
             "model": self.model,
-            "text_1": query,
+            "text_1": [query] * len(documents),
             "text_2": list(documents),
         }
         return url, payload

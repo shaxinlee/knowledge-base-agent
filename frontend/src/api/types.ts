@@ -466,6 +466,7 @@ export interface Message {
   conversation_id: string
   role: MessageRole
   content: string
+  thinking_content?: string | null
   created_at: string
   citations: Citation[]
   attachments: MessageAttachment[]
@@ -501,6 +502,10 @@ export interface SseRetrievalEvent {
 }
 
 export interface SseTokenEvent {
+  text: string
+}
+
+export interface SseThinkingEvent {
   text: string
 }
 

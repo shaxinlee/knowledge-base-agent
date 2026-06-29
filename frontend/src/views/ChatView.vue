@@ -2,6 +2,8 @@
 import {
   Bot,
   BookOpen,
+  Brain,
+  ChevronRight,
   CircleCheck,
   CircleX,
   Image,
@@ -104,6 +106,7 @@ const conversationSearchQuery = ref('')
 const messages = ref<Message[]>([])
 const composerText = ref('')
 const thinkingEnabled = ref(false)
+const thinkingExpandedByMessageId = ref<Record<string, boolean>>({})
 const loading = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
@@ -491,6 +494,7 @@ async function sendMessage(): Promise<void> {
       return
     }
     let assistantMessageId = ''
+    thinkingExpandedByMessageId.value = {}
     await streamConversationMessage(
       activeConversationId.value,
       {
@@ -507,6 +511,17 @@ async function sendMessage(): Promise<void> {
           pendingImageAttachment.value = null
           messages.value = [...messages.value, event.user_message, event.assistant_message]
           void preloadAttachmentImages()
+          void scrollToBottom()
+        },
+        onThinking(event) {
+          messages.value = messages.value.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  thinking_content: `${message.thinking_content ?? ''}${event.text}`,
+                }
+              : message,
+          )
           void scrollToBottom()
         },
         onToken(event) {
@@ -716,8 +731,24 @@ function isWaitingMessage(message: Message): boolean {
   return (
     message.role === 'assistant' &&
     message.id === streamingAssistantMessageId.value &&
-    message.content.length === 0
+    message.content.length === 0 &&
+    !getThinkingContent(message)
   )
+}
+
+function getThinkingContent(message: Message): string {
+  return message.thinking_content ?? ''
+}
+
+function isThinkingExpanded(message: Message): boolean {
+  return thinkingExpandedByMessageId.value[message.id] === true
+}
+
+function toggleThinkingExpanded(message: Message): void {
+  thinkingExpandedByMessageId.value = {
+    ...thinkingExpandedByMessageId.value,
+    [message.id]: !isThinkingExpanded(message),
+  }
 }
 
 function displayMessageLines(message: Message): string[] {
@@ -1302,6 +1333,46 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
               >
                 <p v-if="isWaitingMessage(message)" class="waiting-text">思考中</p>
                 <template v-else>
+                  <div
+                    v-if="message.role !== 'user' && getThinkingContent(message)"
+                    :class="[
+                      'thinking-block',
+                      isThinkingExpanded(message) ? 'is-expanded' : 'is-collapsed',
+                      message.id === streamingAssistantMessageId.value ? 'is-streaming' : '',
+                    ]"
+                  >
+                    <button
+                      v-if="message.id !== streamingAssistantMessageId.value"
+                      type="button"
+                      class="thinking-block-header"
+                      :aria-expanded="isThinkingExpanded(message)"
+                      data-testid="thinking-block-toggle"
+                      @click="toggleThinkingExpanded(message)"
+                    >
+                      <Brain class="thinking-block-icon" />
+                      <span class="thinking-block-title">深度思考</span>
+                      <ChevronRight class="thinking-block-chevron" />
+                    </button>
+                    <div v-else class="thinking-block-header thinking-block-streaming">
+                      <Brain class="thinking-block-icon" />
+                      <span class="thinking-block-title">正在深度思考...</span>
+                      <span class="thinking-block-dots" aria-hidden="true">
+                        <span></span><span></span><span></span>
+                      </span>
+                    </div>
+                    <div
+                      v-if="
+                        isThinkingExpanded(message) ||
+                        message.id === streamingAssistantMessageId.value
+                      "
+                      class="thinking-block-body"
+                    >
+                      <MarkdownContent
+                        :content="getThinkingContent(message)"
+                        :normalize-text="normalizeSpecialDisplayText"
+                      />
+                    </div>
+                  </div>
                   <MarkdownContent
                     :content="displayMessageContent(message)"
                     :normalize-text="normalizeSpecialDisplayText"
@@ -2137,6 +2208,126 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
   border: 1px solid var(--ka-border);
   border-radius: 2px 8px 8px;
   background: #fff;
+}
+
+.thinking-block {
+  margin-bottom: 12px;
+  border: 1px solid var(--ka-border);
+  border-radius: 8px;
+  background: var(--ka-primary-soft);
+  overflow: hidden;
+}
+
+.thinking-block.is-collapsed {
+  background: rgb(15 118 110 / 4%);
+}
+
+.thinking-block-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ka-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.thinking-block-header:hover {
+  background: rgb(15 118 110 / 6%);
+}
+
+.thinking-block-header:focus-visible {
+  outline: 2px solid var(--ka-primary);
+  outline-offset: -2px;
+}
+
+.thinking-block-streaming {
+  cursor: default;
+}
+
+.thinking-block-streaming:hover {
+  background: transparent;
+}
+
+.thinking-block-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.thinking-block-title {
+  flex: 0 0 auto;
+}
+
+.thinking-block-chevron {
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  transition: transform 0.2s ease;
+}
+
+.is-expanded .thinking-block-chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-block-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 6px;
+}
+
+.thinking-block-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ka-primary);
+  opacity: 0.4;
+  animation: thinking-dots 1.2s infinite ease-in-out;
+}
+
+.thinking-block-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking-block-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes thinking-dots {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.thinking-block-body {
+  padding: 10px 14px 14px;
+  border-top: 1px dashed var(--ka-border);
+  color: var(--ka-text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.thinking-block-body :deep(p:first-child) {
+  margin-top: 0;
+}
+
+.thinking-block-body :deep(p:last-child) {
+  margin-bottom: 0;
 }
 
 .bot-icon {

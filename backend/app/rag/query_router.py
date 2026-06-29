@@ -203,10 +203,6 @@ OVERALL_WEAK_KEYWORDS = (
     "大概内容",
     "整体概括",
     "总体概括",
-    "讲什么",
-    "讲的什么",
-    "是关于什么",
-    "主要讲什么",
 )
 
 OVERALL_SUBJECT_KEYWORDS = (
@@ -300,11 +296,14 @@ class RuleBasedKnowledgeSearchRouter:
             if any(re.search(pattern, normalized_query, flags=re.IGNORECASE) for pattern in patterns):
                 from app.services.assistant_profile import get_profile_answer
 
+                direct_answer = (
+                    get_profile_answer(category) if category != "usage" else None
+                )
                 return KnowledgeSearchDecision(
                     research_base=False,
                     category=category,
                     reason="rule_matched",
-                    direct_answer=get_profile_answer(category),
+                    direct_answer=direct_answer,
                 )
         overall_hit = is_overall_query(normalized_query)
         mixed_hit = overall_hit and has_mixed_intent(normalized_query)
@@ -331,27 +330,25 @@ class LLMKnowledgeSearchRouter:
     prompt_template = """你是一个知识库问答系统的前置路由器。
 请判断用户问题应该走哪一种处理方式。
 
-如果问题是以下类型，不需要检索：
-- 询问助手身份
-- 询问助手能力
-- 寒暄
-- 感谢
-- 使用说明
-- 转人工客服
-- 明显闲聊
+只有以下六类问题可以不走知识库检索，输出 category=llm_direct：
+- 纯粹的寒暄（如：你好、您好、哈喽、早上好）
+- 询问助手自己的身份（如：你是谁）
+- 询问助手自己的能力边界（如：你能做什么）
+- 对助手的致谢（如：谢谢）
+- 明显无业务含义的闲聊（如：讲个笑话、陪我聊聊天）
+- 明确要求转人工客服（如：转人工、我要人工客服）
+
+只要问题涉及任何具体主题、产品、功能、业务事实、制度、流程、政策、FAQ，
+或包含“是什么/怎么做/为什么/有哪些/多少钱/什么时间/谁负责/哪个/是否/帮我查/总结/对比”
+等需要事实依据的表述，无论是否看起来像“产品使用问题”，都必须输出 category=normal_rag。
+不要把这些归类为 llm_direct。
 
 如果问题只是在问当前知识库的目录、文件列表、资料范围、整体概览、包含了什么数据，
 或者“这个知识库讲什么、主要内容是什么、是关于什么”，应输出：
 category=knowledge_base_overall
 
-如果问题是在问具体业务事实、文档内容、制度、流程、产品说明、FAQ、总结某个主题，应输出：
-category=normal_rag
-
 如果问题同时包含“知识库概览/文件列表/资料范围”和“继续检索或总结某个具体主题”的组合请求，应输出：
 category=mixed
-
-如果是无需知识库的闲聊/身份/使用说明等，应输出：
-category=llm_direct
 
 只输出一行，格式严格为：
 category=knowledge_base_overall
@@ -429,6 +426,8 @@ category=knowledge_base_overall
                         "你是知识库检索前置分类器。你只能输出 "
                         "category=knowledge_base_overall、category=normal_rag、"
                         "category=mixed 或 category=llm_direct。"
+                        "llm_direct 仅用于纯寒暄/致谢/助手身份/助手能力/闲聊/转人工；"
+                        "任何需要事实依据的问题必须输出 category=normal_rag。"
                     ),
                 },
                 {"role": "user", "content": self.build_prompt(normalized_query)},
@@ -449,6 +448,12 @@ category=knowledge_base_overall
                 )
                 response.raise_for_status()
             category = parse_knowledge_route_category(parse_chat_completion_content(response.json()))
+            if category == "llm_direct" and _looks_fact_seeking(normalized_query):
+                return KnowledgeSearchDecision(
+                    research_base=True,
+                    category="normal_rag",
+                    reason="classifier_overridden_fact_seeking",
+                )
             return KnowledgeSearchDecision(
                 research_base=category in {"normal_rag", "mixed"},
                 category=category,
@@ -708,6 +713,44 @@ def has_mixed_intent(query: str) -> bool:
     if not normalized_query:
         return False
     return contains_any(normalized_query, MIXED_INTENT_KEYWORDS)
+
+
+FACT_SEEKING_KEYWORDS = (
+    "是什么",
+    "什么是",
+    "为什么",
+    "为何",
+    "怎么样",
+    "怎么办",
+    "怎么做",
+    "怎么处理",
+    "如何",
+    "是否",
+    "能不能",
+    "可以吗",
+    "有没有",
+    "多少钱",
+    "多长时间",
+    "哪些",
+    "什么时候",
+    "什么时间",
+    "什么原因",
+    "总结一下",
+    "帮我总结",
+    "对比一下",
+    "分析一下",
+)
+
+FACT_SEEKING_QUESTION_MARKS = ("?", "？")
+
+
+def _looks_fact_seeking(query: str) -> bool:
+    normalized_query = query.strip()
+    if not normalized_query:
+        return False
+    if any(mark in normalized_query for mark in FACT_SEEKING_QUESTION_MARKS):
+        return True
+    return contains_any(normalized_query, FACT_SEEKING_KEYWORDS)
 
 
 def parse_knowledge_route_category(content: str) -> str:
