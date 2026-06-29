@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls -la /home/zhengyang013/sdnu/knowledge-base-agent/docs/ 2>/dev/null; echo \"---PROGRESS---\"; ls -la /home/zhengyang013/sdnu/knowledge-base-agent/docs/progress/ 2>/dev/null; echo \"---TESTS---\"; ls -la /home/zhengyang013/sdnu/knowledge-base-agent/docs/tests/ 2>/dev/null)"
+      "Bash(ls -la /home/zhengyang013/sdnu/knowledge-base-agent/docs/ 2>/dev/null; echo \"---PROGRESS---\"; ls -la /home/zhengyang013/sdnu/knowledge-base-agent/docs/progress/ 2>/dev/null; echo \"---TESTS---\"; ls -la /home/zhengyang013/sdnu/knowledge-base-agent/docs/tests/ 2>/dev/null)",
+      "Bash(find /root/workspace/knowledge-base-agent -type f -name \"*.py\" | head -50)"
     ]
   }
 }

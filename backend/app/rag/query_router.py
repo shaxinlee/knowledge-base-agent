@@ -339,12 +339,18 @@ class LLMKnowledgeSearchRouter:
 - 明确要求转人工客服（如：转人工、我要人工客服）
 
 只要问题涉及任何具体主题、产品、功能、业务事实、制度、流程、政策、FAQ，
-或包含“是什么/怎么做/为什么/有哪些/多少钱/什么时间/谁负责/哪个/是否/帮我查/总结/对比”
-等需要事实依据的表述，无论是否看起来像“产品使用问题”，都必须输出 category=normal_rag。
+或包含”是什么/怎么做/为什么/有哪些/多少钱/什么时间/谁负责/哪个/是否/帮我查/总结/对比”
+等需要事实依据的表述，无论是否看起来像”产品使用问题”，都必须输出 category=normal_rag。
 不要把这些归类为 llm_direct。
+注意：”X是什么”（如”HiMedAgent是什么”、”DIP是什么”）是在询问具体概念的定义，
+必须输出 category=normal_rag，绝不是 knowledge_base_overall。
+
+knowledge_base_overall 仅当问题明确指向”知识库本身”的范围、目录或整体内容时才使用，
+例如”这个知识库包含哪些文件””知识库的主要内容是什么””知识库是关于什么的”。
+关键区别：问题主语必须是”知识库/文件/资料”等集合概念，而非某个具体业务术语。
 
 如果问题只是在问当前知识库的目录、文件列表、资料范围、整体概览、包含了什么数据，
-或者“这个知识库讲什么、主要内容是什么、是关于什么”，应输出：
+或者”这个知识库讲什么、主要内容是什么、是关于什么”，应输出：
 category=knowledge_base_overall
 
 如果问题同时包含“知识库概览/文件列表/资料范围”和“继续检索或总结某个具体主题”的组合请求，应输出：
@@ -428,6 +434,8 @@ category=knowledge_base_overall
                         "category=mixed 或 category=llm_direct。"
                         "llm_direct 仅用于纯寒暄/致谢/助手身份/助手能力/闲聊/转人工；"
                         "任何需要事实依据的问题必须输出 category=normal_rag。"
+                        "knowledge_base_overall 仅当问题主语是'知识库/文件/资料'等集合概念时使用；"
+                        "'X是什么'（如'HiMedAgent是什么'）是询问具体概念定义，必须输出 category=normal_rag。"
                     ),
                 },
                 {"role": "user", "content": self.build_prompt(normalized_query)},
@@ -453,6 +461,12 @@ category=knowledge_base_overall
                     research_base=True,
                     category="normal_rag",
                     reason="classifier_overridden_fact_seeking",
+                )
+            if category == "knowledge_base_overall" and _looks_fact_seeking(normalized_query):
+                return KnowledgeSearchDecision(
+                    research_base=True,
+                    category="normal_rag",
+                    reason="classifier_overridden_overall_is_fact_seeking",
                 )
             return KnowledgeSearchDecision(
                 research_base=category in {"normal_rag", "mixed"},

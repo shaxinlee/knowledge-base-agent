@@ -1,6 +1,7 @@
 import json
+import re
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
@@ -24,6 +25,7 @@ class LLMAnswer:
     prompt_version: str
     raw_prompt_snapshot: str
     token_usage: dict[str, Any]
+    thinking: str | None = None
 
 
 class LLMClientProtocol(Protocol):
@@ -102,12 +104,14 @@ class LLMApiClient:
             ) from exc
         response_payload = response.json()
         content = parse_chat_completion_content(response_payload)
+        clean_content, thinking = strip_thinking_from_content(content)
         return LLMAnswer(
-            content=content,
+            content=clean_content,
             model=self.model,
             prompt_version=self.prompt_version,
             raw_prompt_snapshot=json.dumps(messages, ensure_ascii=False),
             token_usage=parse_token_usage(response_payload),
+            thinking=thinking,
         )
 
     def stream_answer(
@@ -124,6 +128,7 @@ class LLMApiClient:
             stream=True,
             enable_thinking=enable_thinking,
         )
+        thinking_filter = _ThinkingStreamFilter()
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
                 with client.stream(
@@ -142,7 +147,10 @@ class LLMApiClient:
                             yield ("thinking", reasoning)
                         content = event.get("content")
                         if content:
-                            yield ("content", content)
+                            for kind, text in thinking_filter.feed(content):
+                                yield (kind, text)
+            for kind, text in thinking_filter.flush():
+                yield (kind, text)
         except httpx.HTTPError as exc:
             raise ApiError(
                 code="UPSTREAM_SERVICE_ERROR",
@@ -176,12 +184,14 @@ class LLMApiClient:
             ) from exc
         response_payload = response.json()
         content = parse_chat_completion_content(response_payload)
+        clean_content, thinking = strip_thinking_from_content(content)
         return LLMAnswer(
-            content=content,
+            content=clean_content,
             model=self.model,
             prompt_version=DIRECT_PROMPT_VERSION,
             raw_prompt_snapshot=json.dumps(messages, ensure_ascii=False),
             token_usage=parse_token_usage(response_payload),
+            thinking=thinking,
         )
 
     def stream_direct_answer(
@@ -194,6 +204,7 @@ class LLMApiClient:
             stream=True,
             enable_thinking=enable_thinking,
         )
+        thinking_filter = _ThinkingStreamFilter()
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
                 with client.stream(
@@ -212,7 +223,10 @@ class LLMApiClient:
                             yield ("thinking", reasoning)
                         content = event.get("content")
                         if content:
-                            yield ("content", content)
+                            for kind, text in thinking_filter.feed(content):
+                                yield (kind, text)
+            for kind, text in thinking_filter.flush():
+                yield (kind, text)
         except httpx.HTTPError as exc:
             raise ApiError(
                 code="UPSTREAM_SERVICE_ERROR",
@@ -287,6 +301,8 @@ def build_messages(*, query: str, contexts: Sequence[RetrievalResultItem]) -> li
         "不要输出文件路径、图片 URL、资源路径、存储路径、文件名、页码、原始来源位置、"
         "原始 HTML 标签或原始 LaTeX 代码。将表格以可读表格形式呈现，"
         "公式以普通数学文本形式呈现。"
+        "禁止在回复中使用'根据提供的上下文'、'根据上下文'、'根据检索到的信息'、"
+        "'提供的信息'、'检索到的内容'等表述，直接回答问题即可。"
     )
     context_lines = []
     for index, context in enumerate(contexts, start=1):
@@ -440,6 +456,126 @@ def invalid_llm_response() -> ApiError:
         status_code=502,
         details={"service": "llm-api"},
     )
+
+
+_THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def strip_thinking_from_content(content: str) -> tuple[str, str | None]:
+    """Strip thinking content embedded in model response content.
+
+    Handles two patterns:
+    1. <think>...</think> tags (common with Qwen3 models)
+    2. "Here's a thinking process:" followed by content ending with </think>
+
+    Returns (clean_content, thinking_content_or_None).
+    """
+    if not content:
+        return content, None
+
+    match = _THINK_TAG_RE.search(content)
+    if match:
+        thinking = match.group(1).strip() or None
+        clean = (content[: match.start()] + content[match.end() :]).strip()
+        return clean, thinking
+
+    here_marker = "Here's a thinking process:"
+    if here_marker in content and "</think>" in content:
+        end_pos = content.index("</think>") + len("</think>")
+        thinking = content[content.index(here_marker) : end_pos].strip()
+        clean = content[end_pos:].strip()
+        return clean, thinking
+
+    return content, None
+
+
+class _ThinkingStreamFilter:
+    """Stateful filter that extracts thinking content from streamed content tokens.
+
+    When a model puts thinking into the content field instead of the reasoning field,
+    this filter detects thinking markers and routes tokens to the correct channel.
+    """
+
+    _THINK_OPEN = "<think>"
+    _THINK_CLOSE = "</think>"
+    _HERE_MARKER = "Here's a thinking process:"
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_thinking = False
+        self._thinking_done = False
+        self._here_detected = False
+
+    def feed(self, token: str) -> list[tuple[str, str]]:
+        """Feed a content token and return a list of (kind, text) events."""
+        self._buffer += token
+        events: list[tuple[str, str]] = []
+
+        while self._buffer:
+            if self._in_thinking:
+                close_idx = self._buffer.find(self._THINK_CLOSE)
+                if close_idx >= 0:
+                    thinking_text = self._buffer[:close_idx]
+                    if thinking_text:
+                        events.append(("thinking", thinking_text))
+                    self._buffer = self._buffer[close_idx + len(self._THINK_CLOSE) :]
+                    self._in_thinking = False
+                    self._thinking_done = True
+                else:
+                    safe = self._buffer[: -len(self._THINK_CLOSE)]
+                    if safe:
+                        events.append(("thinking", safe))
+                        self._buffer = self._buffer[len(safe) :]
+                    break
+            else:
+                open_idx = self._buffer.find(self._THINK_OPEN)
+                here_idx = self._buffer.find(self._HERE_MARKER)
+
+                if open_idx >= 0:
+                    if open_idx > 0:
+                        events.append(("content", self._buffer[:open_idx]))
+                    self._buffer = self._buffer[open_idx + len(self._THINK_OPEN) :]
+                    self._in_thinking = True
+                elif here_idx >= 0:
+                    if here_idx > 0:
+                        events.append(("content", self._buffer[:here_idx]))
+                    self._buffer = self._buffer[here_idx:]
+                    self._in_thinking = True
+                    self._here_detected = True
+                elif self._thinking_done:
+                    events.append(("content", self._buffer))
+                    self._buffer = ""
+                    break
+                else:
+                    # Only hold back suffix that could be a prefix of a thinking marker
+                    markers = (self._THINK_OPEN, self._HERE_MARKER)
+                    max_len = max(len(m) for m in markers)
+                    hold_back = 0
+                    for length in range(1, min(len(self._buffer), max_len) + 1):
+                        suffix = self._buffer[-length:]
+                        if any(m.startswith(suffix) for m in markers):
+                            hold_back = length
+                    if hold_back > 0:
+                        safe = self._buffer[:-hold_back]
+                        if safe:
+                            events.append(("content", safe))
+                        self._buffer = self._buffer[-hold_back:]
+                    else:
+                        events.append(("content", self._buffer))
+                        self._buffer = ""
+                    break
+
+        return events
+
+    def flush(self) -> list[tuple[str, str]]:
+        """Flush remaining buffer at stream end."""
+        events: list[tuple[str, str]] = []
+        if self._in_thinking and self._buffer:
+            events.append(("thinking", self._buffer))
+        elif self._buffer:
+            events.append(("content", self._buffer))
+        self._buffer = ""
+        return events
 
 
 def get_llm_client() -> LLMClientProtocol:
