@@ -509,6 +509,10 @@ export interface SseThinkingEvent {
   text: string
 }
 
+export interface SseStageEvent {
+  name: string
+}
+
 export interface SseDoneEvent {
   message_id: string
   answer: string

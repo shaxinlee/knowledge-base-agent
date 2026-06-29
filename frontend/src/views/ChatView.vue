@@ -107,6 +107,7 @@ const messages = ref<Message[]>([])
 const composerText = ref('')
 const thinkingEnabled = ref(false)
 const thinkingExpandedByMessageId = ref<Record<string, boolean>>({})
+const currentStage = ref('')
 const loading = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
@@ -495,6 +496,7 @@ async function sendMessage(): Promise<void> {
     }
     let assistantMessageId = ''
     thinkingExpandedByMessageId.value = {}
+    currentStage.value = ''
     await streamConversationMessage(
       activeConversationId.value,
       {
@@ -512,6 +514,9 @@ async function sendMessage(): Promise<void> {
           messages.value = [...messages.value, event.user_message, event.assistant_message]
           void preloadAttachmentImages()
           void scrollToBottom()
+        },
+        onStage(event) {
+          currentStage.value = event.name
         },
         onThinking(event) {
           messages.value = messages.value.map((message) =>
@@ -544,6 +549,7 @@ async function sendMessage(): Promise<void> {
               : message,
           )
           streamingAssistantMessageId.value = ''
+          currentStage.value = ''
           const assistantMessage = messages.value.find((message) => message.id === event.message_id)
           selectedCitation.value = assistantMessage
             ? (visibleMessageCitations(assistantMessage)[0] ?? null)
@@ -564,6 +570,7 @@ async function sendMessage(): Promise<void> {
   } finally {
     sending.value = false
     streamingAssistantMessageId.value = ''
+    currentStage.value = ''
   }
 }
 
@@ -1367,7 +1374,7 @@ async function submitFeedback(message: Message, rating: FeedbackRating): Promise
                 :class="['chat-bubble', message.role === 'user' ? 'user-bubble' : 'ai-bubble']"
                 :data-testid="`message-bubble-${message.role}`"
               >
-                <p v-if="isWaitingMessage(message)" class="waiting-text">思考中</p>
+                <p v-if="isWaitingMessage(message)" class="waiting-text">{{ currentStage || '思考中' }}</p>
                 <template v-else>
                   <div
                     v-if="message.role !== 'user' && getThinkingContent(message)"

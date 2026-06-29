@@ -34,6 +34,7 @@ import type {
   SseDoneEvent,
   SseMessageCreatedEvent,
   SseRetrievalEvent,
+  SseStageEvent,
   SseThinkingEvent,
   SseTokenEvent,
   User,
@@ -403,6 +404,7 @@ export async function sendConversationMessage(
 export interface ConversationMessageStreamHandlers {
   onMessageCreated?: (event: SseMessageCreatedEvent) => void
   onRetrieval?: (event: SseRetrievalEvent) => void
+  onStage?: (event: SseStageEvent) => void
   onThinking?: (event: SseThinkingEvent) => void
   onToken?: (event: SseTokenEvent) => void
   onDone?: (event: SseDoneEvent) => void
@@ -468,6 +470,8 @@ function dispatchSseEvent(rawEvent: string, handlers: ConversationMessageStreamH
     handlers.onMessageCreated?.(payload as SseMessageCreatedEvent)
   } else if (event === 'retrieval') {
     handlers.onRetrieval?.(payload as SseRetrievalEvent)
+  } else if (event === 'stage') {
+    handlers.onStage?.(payload as SseStageEvent)
   } else if (event === 'thinking') {
     handlers.onThinking?.(payload as SseThinkingEvent)
   } else if (event === 'token') {

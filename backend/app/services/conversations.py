@@ -441,9 +441,11 @@ def stream_create_message_events(
         image_description_client=image_description_client,
     )
 
+    yield ("stage", {"name": "意图识别"})
     knowledge_search_decision = knowledge_search_router.decide(augmented_query_text)
 
     if knowledge_search_decision.category == "knowledge_base_overall":
+        yield ("stage", {"name": "获取知识库概览"})
         overall_content = read_knowledge_base_overall(
             db,
             knowledge_base_id=conversation.knowledge_base_id,
@@ -496,6 +498,7 @@ def stream_create_message_events(
         and knowledge_search_decision.category
         in {"identity", "capability", "greeting", "thanks", "casual", "handoff"}
     ):
+        yield ("stage", {"name": "生成回答"})
         yield (
             "retrieval",
             {"retrieved_count": 0, "reranked_count": 0, "final_context_count": 0},
@@ -556,7 +559,9 @@ def stream_create_message_events(
         )
         return
 
+    yield ("stage", {"name": "检索策略分析"})
     route_decision = query_router.route(augmented_query_text)
+    yield ("stage", {"name": "知识检索"})
     retrieval_response = search_knowledge_base(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
@@ -570,6 +575,7 @@ def stream_create_message_events(
         vector_index_client=vector_index_client,
         bm25_index_client=bm25_index_client,
     )
+    yield ("stage", {"name": "结果排序"})
     routed_items = apply_route_preferences(retrieval_response.items, route_decision=route_decision)
     gated_context_items = apply_evidence_gate(routed_items, route_decision=route_decision)
     final_context_items = expand_context_to_section_chunks(
@@ -601,6 +607,7 @@ def stream_create_message_events(
         },
     )
 
+    yield ("stage", {"name": "生成回答"})
     assistant_content = ""
     if final_context_items:
         for kind, text in llm_client.stream_answer(
