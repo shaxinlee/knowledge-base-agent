@@ -187,3 +187,76 @@ class KnowledgeGraphState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class ChunkSummaryEmbedding(Base):
+    __tablename__ = "chunk_summary_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "chunk_id",
+            name="uq_chunk_summary_embeddings_chunk_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("chunks_metadata.id"), nullable=False
+    )
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("files.id"), nullable=False
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=False
+    )
+    parse_job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("parse_jobs.id"), nullable=False
+    )
+    vector: Mapped[list[float]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False
+    )
+    vector_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ChunkRelation(Base):
+    __tablename__ = "chunk_relations"
+    __table_args__ = (
+        CheckConstraint(
+            "similarity >= 0 and similarity <= 1",
+            name="chunk_relation_similarity_valid",
+        ),
+        UniqueConstraint(
+            "source_chunk_id",
+            "target_chunk_id",
+            name="uq_chunk_relations_pair",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_chunk_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("chunks_metadata.id"), nullable=False
+    )
+    target_chunk_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("chunks_metadata.id"), nullable=False
+    )
+    source_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("files.id"), nullable=False
+    )
+    target_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("files.id"), nullable=False
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=False
+    )
+    similarity: Mapped[float] = mapped_column(Float, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

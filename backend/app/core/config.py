@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     knowledge_graph_max_relations_per_document: int = 6
     knowledge_graph_embedding_batch_size: int = 16
     knowledge_graph_community_concurrency: int = 2
+    chunk_graph_similarity_threshold: float = 0.50
+    chunk_graph_max_relations_per_chunk: int = 4
+    chunk_graph_embedding_batch_size: int = 32
+    chunk_graph_max_neighbors_at_retrieval: int = 3
+    chunk_graph_score_decay: float = 0.8
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -150,6 +155,9 @@ class Settings(BaseSettings):
             "knowledge_graph_max_relations_per_document",
             "knowledge_graph_embedding_batch_size",
             "knowledge_graph_community_concurrency",
+            "chunk_graph_max_relations_per_chunk",
+            "chunk_graph_embedding_batch_size",
+            "chunk_graph_max_neighbors_at_retrieval",
         )
         for field_name in positive_integer_fields:
             if getattr(self, field_name) < 1:
@@ -174,6 +182,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "knowledge_graph_similarity_threshold must be between 0 and 1"
             )
+        if not 0 <= self.chunk_graph_similarity_threshold <= 1:
+            raise ValueError(
+                "chunk_graph_similarity_threshold must be between 0 and 1"
+            )
+        if not 0 <= self.chunk_graph_score_decay <= 1:
+            raise ValueError("chunk_graph_score_decay must be between 0 and 1")
         return self
 
 

@@ -229,6 +229,66 @@ MIXED_INTENT_KEYWORDS = (
     "再分析",
 )
 
+DOC_SUMMARY_ACTION_KEYWORDS = (
+    "讲了什么",
+    "讲什么",
+    "讲的什么",
+    "说了什么",
+    "说些什么",
+    "写什么",
+    "写的什么",
+    "写了什么",
+    "介绍什么",
+    "是什么内容",
+    "什么内容",
+    "什么主题",
+    "主要内容",
+    "概括一下",
+    "概括内容",
+    "内容概括",
+    "内容摘要",
+    "总结一下",
+    "帮我总结",
+    "帮我概括",
+    "给我总结",
+    "给我概括",
+    "做个总结",
+    "做个概括",
+    "归纳一下",
+    "内容归纳",
+    "主要讲了",
+    "大致内容",
+    "概要",
+    "简要介绍",
+    "简要说明",
+)
+
+DOC_SUMMARY_FILE_KEYWORDS = (
+    "文件",
+    "文档",
+    "资料",
+    "手册",
+    "报告",
+    "方案",
+    "规范",
+    "制度",
+    "说明",
+    "指南",
+    "指引",
+    "目录",
+    "大纲",
+    "论文",
+    "文章",
+    "这个",
+    "那个",
+    "这篇",
+    "那篇",
+    "这份",
+    "那份",
+    "哪篇",
+    "哪份",
+)
+
 
 class RuleBasedKnowledgeSearchRouter:
     patterns: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -313,6 +373,12 @@ class RuleBasedKnowledgeSearchRouter:
                 category="mixed",
                 reason="overall_and_rag_rule_matched",
             )
+        if is_document_summary_query(normalized_query):
+            return KnowledgeSearchDecision(
+                research_base=True,
+                category="document_summary",
+                reason="document_summary_rule_matched",
+            )
         if overall_hit:
             return KnowledgeSearchDecision(
                 research_base=False,
@@ -353,13 +419,20 @@ knowledge_base_overall 仅当问题明确指向”知识库本身”的范围、
 或者”这个知识库讲什么、主要内容是什么、是关于什么”，应输出：
 category=knowledge_base_overall
 
-如果问题同时包含“知识库概览/文件列表/资料范围”和“继续检索或总结某个具体主题”的组合请求，应输出：
+如果问题同时包含”知识库概览/文件列表/资料范围”和”继续检索或总结某个具体主题”的组合请求，应输出：
 category=mixed
+
+document_summary 当用户询问某个或某些具体文件/文档的摘要、概述、讲了什么时，应输出：
+category=document_summary
+例如：”这个文件讲了什么””帮我总结一下XX文档””XX方案的主要内容是什么””概括一下这份报告”。
+关键区别：问题主语是某个具体的文件/文档/报告/方案，而非整个知识库。
+注意：如果问题主语是”知识库”则应输出 knowledge_base_overall，不是 document_summary。
 
 只输出一行，格式严格为：
 category=knowledge_base_overall
 或 category=normal_rag
 或 category=mixed
+或 category=document_summary
 或 category=llm_direct
 
 不要输出解释。
@@ -386,7 +459,7 @@ category=knowledge_base_overall
         rule_decision = self.rule_router.decide(normalized_query)
         if not rule_decision.research_base:
             return rule_decision
-        if rule_decision.category == "mixed":
+        if rule_decision.category in {"mixed", "document_summary"}:
             return rule_decision
 
         settings = get_settings()
@@ -431,11 +504,13 @@ category=knowledge_base_overall
                     "content": (
                         "你是知识库检索前置分类器。你只能输出 "
                         "category=knowledge_base_overall、category=normal_rag、"
-                        "category=mixed 或 category=llm_direct。"
+                        "category=mixed、category=document_summary 或 category=llm_direct。"
                         "llm_direct 仅用于纯寒暄/致谢/助手身份/助手能力/闲聊/转人工；"
                         "任何需要事实依据的问题必须输出 category=normal_rag。"
                         "knowledge_base_overall 仅当问题主语是'知识库/文件/资料'等集合概念时使用；"
                         "'X是什么'（如'HiMedAgent是什么'）是询问具体概念定义，必须输出 category=normal_rag。"
+                        "document_summary 当用户询问某个具体文件/文档的摘要或概述时使用；"
+                        "如果主语是'知识库'则用 knowledge_base_overall。"
                     ),
                 },
                 {"role": "user", "content": self.build_prompt(normalized_query)},
@@ -469,7 +544,7 @@ category=knowledge_base_overall
                     reason="classifier_overridden_overall_is_fact_seeking",
                 )
             return KnowledgeSearchDecision(
-                research_base=category in {"normal_rag", "mixed"},
+                research_base=category in {"normal_rag", "mixed", "document_summary"},
                 category=category,
                 reason="classifier",
             )
@@ -729,6 +804,27 @@ def has_mixed_intent(query: str) -> bool:
     return contains_any(normalized_query, MIXED_INTENT_KEYWORDS)
 
 
+DOC_SUMMARY_KB_SCOPE_KEYWORDS = (
+    "知识库",
+    "知识库里",
+    "知识库中",
+    "本知识库",
+    "这个知识库",
+    "当前知识库",
+)
+
+
+def is_document_summary_query(query: str) -> bool:
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return False
+    if contains_any(normalized_query, DOC_SUMMARY_KB_SCOPE_KEYWORDS):
+        return False
+    if not contains_any(normalized_query, DOC_SUMMARY_ACTION_KEYWORDS):
+        return False
+    return contains_any(normalized_query, DOC_SUMMARY_FILE_KEYWORDS)
+
+
 FACT_SEEKING_KEYWORDS = (
     "是什么",
     "什么是",
@@ -772,7 +868,7 @@ def parse_knowledge_route_category(content: str) -> str:
     normalized = re.sub(r"^```(?:text)?\s*", "", normalized)
     normalized = re.sub(r"\s*```$", "", normalized)
     match = re.search(
-        r"(?:category\s*=\s*)?(knowledge_base_overall|normal_rag|mixed|llm_direct)",
+        r"(?:category\s*=\s*)?(knowledge_base_overall|normal_rag|mixed|document_summary|llm_direct)",
         normalized,
     )
     if match is None:
