@@ -67,9 +67,14 @@ export interface LoginRequest {
   password: string
 }
 
+export interface RegisterRequest {
+  username: string
+}
+
 export interface ConsumerSessionRequest {
   session_id: string
   display_name?: string
+  username?: string
 }
 
 export interface ConsumerUserOption {

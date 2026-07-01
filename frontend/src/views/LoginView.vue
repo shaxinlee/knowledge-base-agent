@@ -11,9 +11,11 @@ import {
   getOrCreateSessionId,
   listConsumerUsers,
   login as loginRequest,
+  register as registerRequest,
   saveAuthTokens,
 } from '@/api/client'
 import type { ConsumerUserOption, UserRole } from '@/api/types'
+import { ApiClientError } from '@/api/client'
 import cyberPickleJarLogo from '@/assets/cyber-pickle-jar-logo.png'
 
 type LoginMode = 'admin' | 'user'
@@ -38,6 +40,8 @@ const rememberLogin = ref(true)
 const loading = ref(false)
 const loadingUserOptions = ref(false)
 const errorMessage = ref('')
+const showRegister = ref(false)
+const registerUsername = ref('')
 const deploymentDay = ref(1)
 const knowledgeBaseCount = ref(0)
 
@@ -238,6 +242,7 @@ watch([password, showPassword], () => {
 
 async function selectLoginMode(mode: LoginMode): Promise<void> {
   loginMode.value = mode
+  showRegister.value = false
   errorMessage.value = ''
   if (mode === 'admin') {
     username.value = 'admin'
@@ -247,6 +252,52 @@ async function selectLoginMode(mode: LoginMode): Promise<void> {
 
   password.value = ''
   await loadConsumerUsers()
+}
+
+function switchToRegister(): void {
+  showRegister.value = true
+  errorMessage.value = ''
+}
+
+function switchToLogin(): void {
+  showRegister.value = false
+  errorMessage.value = ''
+  clearRegisterForm()
+}
+
+function clearRegisterForm(): void {
+  registerUsername.value = ''
+}
+
+async function submitRegister(): Promise<void> {
+  if (loading.value) return
+
+  if (!registerUsername.value.trim()) {
+    errorMessage.value = '请输入用户名。'
+    return
+  }
+
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const response = await registerRequest({
+      username: registerUsername.value.trim(),
+    })
+    saveAuthTokens(response)
+    window.location.href = resolvePostLoginPath(response.user.role)
+  } catch (error) {
+    if (error instanceof ApiClientError) {
+      if (error.code === 'VALIDATION_ERROR') {
+        errorMessage.value = '用户名已被占用。'
+      } else {
+        errorMessage.value = error.message
+      }
+    } else {
+      errorMessage.value = '注册失败，请稍后重试。'
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function submitLogin(): Promise<void> {
@@ -263,7 +314,7 @@ async function submitLogin(): Promise<void> {
         password: password.value,
       })
       saveAuthTokens(response)
-      await router.push(resolvePostLoginPath(response.user.role))
+      window.location.href = resolvePostLoginPath(response.user.role)
       return
     }
 
@@ -272,9 +323,10 @@ async function submitLogin(): Promise<void> {
     const response = await createConsumerSession({
       session_id: getOrCreateSessionId(),
       display_name: displayName,
+      username: selectedUsername.value,
     })
     saveAuthTokens(response)
-    await router.push(resolvePostLoginPath(response.user.role))
+    window.location.href = resolvePostLoginPath(response.user.role)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '登录失败，请稍后重试。'
   } finally {
@@ -524,8 +576,8 @@ function clearPeekTimers(): void {
           </button>
         </div>
 
-        <form class="form-stack" @submit.prevent="submitLogin">
-          <template v-if="loginMode === 'admin'">
+        <form class="form-stack" @submit.prevent="showRegister ? submitRegister() : submitLogin()">
+          <template v-if="!showRegister && loginMode === 'admin'">
             <label class="field-label">
               用户名
               <el-input
@@ -570,7 +622,7 @@ function clearPeekTimers(): void {
             </div>
           </template>
 
-          <template v-else>
+          <template v-else-if="!showRegister && loginMode === 'user'">
             <label class="field-label">
               选择用户
               <el-select
@@ -598,6 +650,19 @@ function clearPeekTimers(): void {
             </div>
           </template>
 
+          <template v-else-if="showRegister">
+            <label class="field-label">
+              用户名
+              <el-input
+                v-model="registerUsername"
+                placeholder="请输入用户名"
+                size="large"
+                autocomplete="username"
+                maxlength="255"
+              />
+            </label>
+          </template>
+
           <p v-if="errorMessage" class="login-error">{{ errorMessage }}</p>
 
           <el-button
@@ -607,8 +672,19 @@ function clearPeekTimers(): void {
             :loading="loading"
             class="login-button"
           >
-            {{ loginMode === 'admin' ? '登录管理后台' : '进入用户页面' }}
+            {{ showRegister ? '注册并登录' : loginMode === 'admin' ? '登录管理后台' : '进入用户页面' }}
           </el-button>
+
+          <div v-if="loginMode === 'user'" class="form-footer-link">
+            <template v-if="!showRegister">
+              <span class="form-footer-text">没有账号？</span>
+              <button class="ka-link-button" type="button" @click="switchToRegister">注册</button>
+            </template>
+            <template v-else>
+              <span class="form-footer-text">已有账号？</span>
+              <button class="ka-link-button" type="button" @click="switchToLogin">去登录</button>
+            </template>
+          </div>
         </form>
       </div>
     </section>
@@ -1086,5 +1162,18 @@ function clearPeekTimers(): void {
   .mode-switch {
     grid-template-columns: 1fr;
   }
+}
+
+.form-footer-link {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.form-footer-text {
+  color: var(--ka-text-secondary);
 }
 </style>

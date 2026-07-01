@@ -102,6 +102,7 @@ const route = useRoute()
 const knowledgeBases = ref<KnowledgeBase[]>([])
 const conversations = ref<Conversation[]>([])
 const currentUserRole = ref<UserRole | null>(null)
+const cachedUserId = ref<string | null>(null)
 const activeKnowledgeBaseId = ref('')
 const activeConversationId = ref('')
 const conversationSearchQuery = ref('')
@@ -212,7 +213,9 @@ onMounted(async () => {
     return
   }
   try {
-    currentUserRole.value = (await getCurrentUser()).role
+    const user = await getCurrentUser()
+    currentUserRole.value = user.role
+    cachedUserId.value = user.id
   } catch {
     currentUserRole.value = null
   }
@@ -249,6 +252,23 @@ onDeactivated(() => {
 })
 
 onActivated(async () => {
+  try {
+    const user = await getCurrentUser()
+    if (cachedUserId.value && cachedUserId.value !== user.id) {
+      cachedUserId.value = user.id
+      currentUserRole.value = user.role
+      messages.value = []
+      conversations.value = []
+      activeConversationId.value = ''
+      activeKnowledgeBaseId.value = ''
+      selectedCitation.value = null
+      await loadKnowledgeBases()
+      return
+    }
+  } catch {
+    /* ignore */
+  }
+
   if (wasStreaming.value) {
     wasStreaming.value = false
     sending.value = false

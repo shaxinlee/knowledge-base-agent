@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import ApiError, api_error_handler
-from app.db.init import init_default_admin
+from app.db.init import init_default_admin, run_migrations
 from app.db.session import SessionLocal
 from app.services.parse_pipeline import ParseJobWorker
 from app.services.document_summaries import DocumentSummaryWorker
@@ -19,6 +19,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    run_migrations()
     init_default_admin()
     worker: ParseJobWorker | None = None
     summary_worker: DocumentSummaryWorker | None = None

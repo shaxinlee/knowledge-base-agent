@@ -8,9 +8,14 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RegisterRequest(BaseModel):
+    username: str
+
+
 class ConsumerSessionRequest(BaseModel):
     session_id: str
     display_name: str | None = None
+    username: str | None = None
 
 
 class ConsumerUserOption(BaseModel):

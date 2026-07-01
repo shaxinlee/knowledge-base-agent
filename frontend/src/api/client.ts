@@ -29,6 +29,7 @@ import type {
   KnowledgeGraph,
   LogoutRequest,
   ParseJob,
+  RegisterRequest,
   ResetPasswordRequest,
   ResetPasswordResponse,
   SseDoneEvent,
@@ -97,6 +98,14 @@ export function getOrCreateSessionId(): string {
 
 export async function login(payload: LoginRequest): Promise<LoginResponse> {
   return apiRequest<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    skipAuth: true,
+  })
+}
+
+export async function register(payload: RegisterRequest): Promise<LoginResponse> {
+  return apiRequest<LoginResponse>('/auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
     skipAuth: true,

@@ -3,6 +3,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
@@ -134,8 +135,35 @@ def find_or_create_consumer_by_session_id(
 
 
 def create_consumer_session(
-    db: Session, *, session_id: str, display_name: str | None = None
+    db: Session, *, session_id: str, display_name: str | None = None, username: str | None = None
 ) -> LoginResponse:
+    if username:
+        user = get_user_by_username(db, username)
+        if user is None:
+            raise ApiError(
+                code="INVALID_CREDENTIALS",
+                message="User not found.",
+                status_code=404,
+            )
+        if user.role != UserRole.USER.value:
+            raise ApiError(
+                code="FORBIDDEN",
+                message="Only regular users can use this login.",
+                status_code=403,
+            )
+        if user.status == UserStatus.DISABLED.value:
+            raise ApiError(
+                code="ACCOUNT_DISABLED",
+                message="Account is disabled.",
+                status_code=403,
+            )
+        user.failed_login_count = 0
+        user.locked_until = None
+        user.last_login_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(user)
+        return build_login_response(user)
+
     return build_login_response(
         find_or_create_consumer_by_session_id(db, session_id=session_id, display_name=display_name)
     )
@@ -188,6 +216,39 @@ def authenticate_user(db: Session, *, username: str, password: str) -> LoginResp
     user.locked_until = None
     user.last_login_at = now
     db.commit()
+    db.refresh(user)
+    return build_login_response(user)
+
+
+def register_user(
+    db: Session,
+    *,
+    username: str,
+) -> LoginResponse:
+    from app.services.users import ensure_user_identity_available
+
+    email = f"{username}@registered.local"
+    ensure_user_identity_available(db, email=email, username=username)
+
+    user = User(
+        email=email,
+        username=username,
+        password_hash=hash_password(f"registered-{username}"),
+        role=UserRole.USER.value,
+        status=UserStatus.ACTIVE.value,
+    )
+    user.profile = UserProfile(display_name=username)
+    db.add(user)
+    user.last_login_at = datetime.now(UTC)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ApiError(
+            code="VALIDATION_ERROR",
+            message="Username is already in use.",
+            status_code=409,
+        )
     db.refresh(user)
     return build_login_response(user)
 
