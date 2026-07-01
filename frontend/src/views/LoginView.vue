@@ -8,6 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   createConsumerSession,
   getKnowledgeBasePublicSummary,
+  getOrCreateSessionId,
   listConsumerUsers,
   login as loginRequest,
   saveAuthTokens,
@@ -266,12 +267,12 @@ async function submitLogin(): Promise<void> {
       return
     }
 
-    if (!selectedUsername.value) {
-      errorMessage.value = '请选择一个普通用户后进入。'
-      return
-    }
-
-    const response = await createConsumerSession({ username: selectedUsername.value })
+    const selectedUser = consumerUsers.value.find((u) => u.username === selectedUsername.value)
+    const displayName = selectedUser?.display_name ?? ''
+    const response = await createConsumerSession({
+      session_id: getOrCreateSessionId(),
+      display_name: displayName,
+    })
     saveAuthTokens(response)
     await router.push(resolvePostLoginPath(response.user.role))
   } catch (error) {

@@ -16,6 +16,7 @@ from app.schemas.users import (
 )
 from app.services.users import (
     create_user,
+    delete_user,
     disable_user,
     enable_user,
     list_users,
@@ -124,6 +125,22 @@ def reset_password_endpoint(
         db,
         user_id,
         payload.new_password,
+        actor=admin,
+        ip_address=get_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+
+@router.delete("/{user_id}", status_code=204)
+def delete_user_endpoint(
+    user_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin_user),
+) -> None:
+    delete_user(
+        db,
+        user_id,
         actor=admin,
         ip_address=get_request_ip(request),
         user_agent=request.headers.get("user-agent"),

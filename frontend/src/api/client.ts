@@ -47,6 +47,7 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const ACCESS_TOKEN_KEY = 'kb_agent_access_token'
 const REFRESH_TOKEN_KEY = 'kb_agent_refresh_token'
+const SESSION_ID_KEY = 'kb_agent_session_id'
 let cachedCurrentUser: User | null = null
 let currentUserRequest: Promise<User> | null = null
 
@@ -82,6 +83,16 @@ export function clearAuthTokens(): void {
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
   cachedCurrentUser = null
   currentUserRequest = null
+}
+
+export function getOrCreateSessionId(): string {
+  const existing = window.localStorage.getItem(SESSION_ID_KEY)
+  if (existing) {
+    return existing
+  }
+  const sessionId = crypto.randomUUID()
+  window.localStorage.setItem(SESSION_ID_KEY, sessionId)
+  return sessionId
 }
 
 export async function login(payload: LoginRequest): Promise<LoginResponse> {
@@ -180,6 +191,12 @@ export async function disableUser(userId: string): Promise<User> {
 export async function enableUser(userId: string): Promise<User> {
   return apiRequest<User>(`/users/${userId}/enable`, {
     method: 'POST',
+  })
+}
+
+export async function deleteUser(userId: string): Promise<void> {
+  return apiRequest<void>(`/users/${userId}`, {
+    method: 'DELETE',
   })
 }
 

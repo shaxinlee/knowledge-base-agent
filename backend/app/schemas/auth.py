@@ -9,7 +9,8 @@ class LoginRequest(BaseModel):
 
 
 class ConsumerSessionRequest(BaseModel):
-    username: str | None = None
+    session_id: str
+    display_name: str | None = None
 
 
 class ConsumerUserOption(BaseModel):

@@ -68,7 +68,8 @@ export interface LoginRequest {
 }
 
 export interface ConsumerSessionRequest {
-  username: string
+  session_id: string
+  display_name?: string
 }
 
 export interface ConsumerUserOption {

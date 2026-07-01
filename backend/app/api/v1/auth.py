@@ -45,10 +45,12 @@ def read_consumer_users(db: Session = Depends(get_db)) -> ConsumerUserOptionsRes
 
 @router.post("/consumer-session", response_model=LoginResponse)
 def consumer_session(
-    payload: ConsumerSessionRequest | None = None,
+    payload: ConsumerSessionRequest,
     db: Session = Depends(get_db),
 ) -> LoginResponse:
-    return create_consumer_session(db, username=payload.username if payload else None)
+    return create_consumer_session(
+        db, session_id=payload.session_id, display_name=payload.display_name
+    )
 
 
 @router.post("/refresh", response_model=TokenResponse)

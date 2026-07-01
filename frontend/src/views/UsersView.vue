@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Edit, Key, Plus, Search } from '@element-plus/icons-vue'
+import { Delete, Edit, Key, Plus, Search } from '@element-plus/icons-vue'
 import {
   ElButton,
   ElDialog,
@@ -17,6 +17,7 @@ import { useRouter } from 'vue-router'
 
 import {
   createUser,
+  deleteUser,
   disableUser,
   enableUser,
   getAccessToken,
@@ -165,6 +166,23 @@ async function resetPassword(user: User): Promise<void> {
   }
 }
 
+async function deleteUserConfirm(user: User): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除用户 "${user.display_name}"（${user.username}）吗？此操作不可撤销。`,
+      '删除用户',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+    await deleteUser(user.id)
+    ElMessage.success('用户已删除')
+    await loadUsers()
+  } catch (error) {
+    if (error !== 'cancel') {
+      handleError(error)
+    }
+  }
+}
+
 function resetFilters(): void {
   keyword.value = ''
   roleFilter.value = 'all'
@@ -280,6 +298,10 @@ function handleError(error: unknown): void {
                   <button class="ka-link-button" @click="resetPassword(user)">
                     <el-icon><Key /></el-icon>
                     重置密码
+                  </button>
+                  <button class="ka-link-button ka-danger-link" @click="deleteUserConfirm(user)">
+                    <el-icon><Delete /></el-icon>
+                    删除
                   </button>
                 </div>
               </td>

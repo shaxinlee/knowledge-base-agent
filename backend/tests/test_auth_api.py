@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -74,8 +75,9 @@ def test_login_refresh_and_me_with_default_admin() -> None:
         app.dependency_overrides.clear()
 
 
-def test_consumer_session_creates_user_role_token_without_password() -> None:
+def test_consumer_session_creates_user_with_session_id() -> None:
     session_factory = _make_session_factory()
+    session_id = str(uuid4())
 
     def override_db() -> Generator[Session, None, None]:
         yield from _override_db(session_factory)
@@ -84,14 +86,16 @@ def test_consumer_session_creates_user_role_token_without_password() -> None:
     try:
         client = TestClient(app)
 
-        response = client.post("/api/v1/auth/consumer-session")
+        response = client.post(
+            "/api/v1/auth/consumer-session", json={"session_id": session_id}
+        )
 
         assert response.status_code == 200
         body = response.json()
         assert body["token_type"] == "bearer"
         assert body["access_token"]
         assert body["refresh_token"]
-        assert body["user"]["username"] == "consumer"
+        assert body["user"]["username"] == f"consumer-{session_id}"
         assert body["user"]["role"] == "user"
         assert body["user"]["is_active"] is True
 
@@ -145,19 +149,9 @@ def test_consumer_users_lists_active_registered_user_names() -> None:
         app.dependency_overrides.clear()
 
 
-def test_consumer_session_uses_selected_registered_user() -> None:
+def test_consumer_session_returns_same_user_for_same_session_id() -> None:
     session_factory = _make_session_factory()
-    with session_factory() as db:
-        alice = User(
-            email="alice@example.local",
-            username="alice",
-            password_hash=hash_password("AlicePassword123"),
-            role=UserRole.USER.value,
-            status=UserStatus.ACTIVE.value,
-        )
-        alice.profile = UserProfile(display_name="Alice Zhang")
-        db.add(alice)
-        db.commit()
+    session_id = str(uuid4())
 
     def override_db() -> Generator[Session, None, None]:
         yield from _override_db(session_factory)
@@ -166,21 +160,23 @@ def test_consumer_session_uses_selected_registered_user() -> None:
     try:
         client = TestClient(app)
 
-        response = client.post("/api/v1/auth/consumer-session", json={"username": "alice"})
+        first_response = client.post(
+            "/api/v1/auth/consumer-session", json={"session_id": session_id}
+        )
+        assert first_response.status_code == 200
+        first_user_id = first_response.json()["user"]["id"]
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["user"]["username"] == "alice"
-        assert body["user"]["display_name"] == "Alice Zhang"
-        assert body["user"]["role"] == "user"
+        second_response = client.post(
+            "/api/v1/auth/consumer-session", json={"session_id": session_id}
+        )
+        assert second_response.status_code == 200
+        assert second_response.json()["user"]["id"] == first_user_id
     finally:
         app.dependency_overrides.clear()
 
 
-def test_consumer_session_rejects_admin_username() -> None:
+def test_consumer_session_creates_different_users_for_different_session_ids() -> None:
     session_factory = _make_session_factory()
-    with session_factory() as db:
-        create_default_admin(db)
 
     def override_db() -> Generator[Session, None, None]:
         yield from _override_db(session_factory)
@@ -189,10 +185,38 @@ def test_consumer_session_rejects_admin_username() -> None:
     try:
         client = TestClient(app)
 
-        response = client.post("/api/v1/auth/consumer-session", json={"username": "admin"})
+        first_response = client.post(
+            "/api/v1/auth/consumer-session",
+            json={"session_id": str(uuid4())},
+        )
+        assert first_response.status_code == 200
 
-        assert response.status_code == 404
-        assert response.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
+        second_response = client.post(
+            "/api/v1/auth/consumer-session",
+            json={"session_id": str(uuid4())},
+        )
+        assert second_response.status_code == 200
+        assert (
+            second_response.json()["user"]["id"]
+            != first_response.json()["user"]["id"]
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_consumer_session_requires_session_id() -> None:
+    session_factory = _make_session_factory()
+
+    def override_db() -> Generator[Session, None, None]:
+        yield from _override_db(session_factory)
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+
+        response = client.post("/api/v1/auth/consumer-session", json={})
+
+        assert response.status_code == 422
     finally:
         app.dependency_overrides.clear()
 

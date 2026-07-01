@@ -191,6 +191,33 @@ def enable_user(
     return build_auth_user_response(user)
 
 
+def delete_user(
+    db: Session,
+    user_id: UUID,
+    *,
+    actor: User,
+    ip_address: str | None,
+    user_agent: str | None,
+) -> None:
+    user = require_user(db, user_id)
+    before = build_user_audit_snapshot(user)
+    now = datetime.now(UTC)
+    user.deleted_at = now
+    user.status = UserStatus.DISABLED.value
+    db.flush()
+    create_audit_log(
+        db,
+        actor_id=actor.id,
+        action="delete_user",
+        resource_type="user",
+        resource_id=user.id,
+        details={"before": before, "after": build_user_audit_snapshot(user)},
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.commit()
+
+
 def reset_password(
     db: Session,
     user_id: UUID,

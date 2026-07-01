@@ -64,46 +64,6 @@ def create_default_admin(db: Session) -> User | None:
     return admin
 
 
-def create_or_update_default_consumer(db: Session) -> User:
-    settings = get_settings()
-    user = db.scalar(
-        select(User)
-        .options(selectinload(User.profile))
-        .where(User.username == settings.default_consumer_username)
-    )
-    if user is not None and user.role != UserRole.USER.value:
-        raise ApiError(
-            code="CONFIGURATION_ERROR",
-            message="Default consumer username is already used by a non-user account.",
-            status_code=500,
-        )
-
-    if user is None:
-        user = User(
-            email=settings.default_consumer_email,
-            username=settings.default_consumer_username,
-            password_hash=hash_password(f"{settings.jwt_secret_key}:consumer-session"),
-            role=UserRole.USER.value,
-            status=UserStatus.ACTIVE.value,
-        )
-        user.profile = UserProfile(display_name=settings.default_consumer_display_name)
-        db.add(user)
-    else:
-        user.status = UserStatus.ACTIVE.value
-        user.deleted_at = None
-        user.failed_login_count = 0
-        user.locked_until = None
-        if user.profile is None:
-            user.profile = UserProfile(display_name=settings.default_consumer_display_name)
-        elif not user.profile.display_name:
-            user.profile.display_name = settings.default_consumer_display_name
-
-    user.last_login_at = datetime.now(UTC)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
 def list_consumer_user_options(db: Session) -> ConsumerUserOptionsResponse:
     users = db.scalars(
         select(User)
@@ -113,6 +73,7 @@ def list_consumer_user_options(db: Session) -> ConsumerUserOptionsResponse:
             User.deleted_at.is_(None),
             User.role == UserRole.USER.value,
             User.status == UserStatus.ACTIVE.value,
+            ~User.username.like("consumer-%"),
         )
         .order_by(UserProfile.display_name.asc(), User.username.asc())
     ).all()
@@ -131,30 +92,53 @@ def list_consumer_user_options(db: Session) -> ConsumerUserOptionsResponse:
     )
 
 
-def create_consumer_session(db: Session, *, username: str | None = None) -> LoginResponse:
-    if username is None:
-        return build_login_response(create_or_update_default_consumer(db))
-
-    user = get_user_by_username(db, username)
-    if user is None or user.role != UserRole.USER.value:
+def find_or_create_consumer_by_session_id(
+    db: Session, *, session_id: str, display_name: str | None = None
+) -> User:
+    user = db.scalar(
+        select(User)
+        .options(selectinload(User.profile))
+        .where(User.session_id == session_id, User.deleted_at.is_(None))
+    )
+    if user is not None and user.role != UserRole.USER.value:
         raise ApiError(
-            code="RESOURCE_NOT_FOUND",
-            message="Consumer user was not found.",
-            status_code=404,
-        )
-    if user.status == UserStatus.DISABLED.value:
-        raise ApiError(
-            code="ACCOUNT_DISABLED",
-            message="Account is disabled.",
-            status_code=403,
+            code="CONFIGURATION_ERROR",
+            message="Session ID is already used by a non-user account.",
+            status_code=500,
         )
 
-    user.failed_login_count = 0
-    user.locked_until = None
+    if user is None:
+        settings = get_settings()
+        user = User(
+            email=f"{session_id}@session.local",
+            username=f"consumer-{session_id}",
+            password_hash=hash_password(f"{settings.jwt_secret_key}:{session_id}"),
+            role=UserRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+            session_id=session_id,
+        )
+        user.profile = UserProfile(
+            display_name=display_name or settings.default_consumer_display_name
+        )
+        db.add(user)
+    else:
+        user.status = UserStatus.ACTIVE.value
+        user.deleted_at = None
+        user.failed_login_count = 0
+        user.locked_until = None
+
     user.last_login_at = datetime.now(UTC)
     db.commit()
     db.refresh(user)
-    return build_login_response(user)
+    return user
+
+
+def create_consumer_session(
+    db: Session, *, session_id: str, display_name: str | None = None
+) -> LoginResponse:
+    return build_login_response(
+        find_or_create_consumer_by_session_id(db, session_id=session_id, display_name=display_name)
+    )
 
 
 def authenticate_user(db: Session, *, username: str, password: str) -> LoginResponse:
