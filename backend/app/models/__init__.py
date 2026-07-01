@@ -12,6 +12,8 @@ from app.models.file import File, FileStatus
 from app.models.feedback import Feedback, FeedbackRating
 from app.models.knowledge_base import KnowledgeBase, KnowledgeBaseStatus
 from app.models.knowledge_graph import (
+    ChunkRelation,
+    ChunkSummaryEmbedding,
     CommunitySummaryStatus,
     DocumentSummaryEmbedding,
     DocumentSummaryRelation,
@@ -32,6 +34,8 @@ __all__ = [
     "DocumentBlock",
     "ChunkExtractionStatus",
     "ChunkKnowledgeExtraction",
+    "ChunkRelation",
+    "ChunkSummaryEmbedding",
     "DocumentSummary",
     "DocumentSummaryStatus",
     "File",

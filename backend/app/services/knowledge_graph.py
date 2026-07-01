@@ -42,6 +42,7 @@ from app.services.document_summary_llm import (
     get_document_summary_llm_config,
 )
 from app.services.embedding import EmbeddingClientProtocol, get_embedding_client
+from app.services.chunk_graph import build_chunk_graph_for_knowledge_base
 
 logger = logging.getLogger(__name__)
 GRAPH_STATE_KEY = "global"
@@ -806,6 +807,24 @@ async def rebuild_knowledge_graph(
             embedding_model=embedding_client.model,
             metadata=community_stats,
         )
+        kb_ids = {doc.knowledge_base_id for doc in documents}
+        for kb_id in kb_ids:
+            try:
+                await asyncio.to_thread(
+                    build_chunk_graph_for_knowledge_base,
+                    session_factory,
+                    knowledge_base_id=kb_id,
+                    embedding_client=embedding_client,
+                    batch_size=settings.chunk_graph_embedding_batch_size,
+                    threshold=settings.chunk_graph_similarity_threshold,
+                    max_relations_per_chunk=settings.chunk_graph_max_relations_per_chunk,
+                )
+            except Exception:
+                logger.exception(
+                    "Chunk graph build failed for knowledge_base_id=%s; "
+                    "it will retry next cycle.",
+                    kb_id,
+                )
         return True
     except Exception as exc:
         logger.exception("Knowledge graph rebuild failed.")

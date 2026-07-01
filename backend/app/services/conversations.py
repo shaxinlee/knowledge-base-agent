@@ -5,18 +5,22 @@ import re
 from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import ApiError
 from app.models import (
     ChunkMetadata,
+    ChunkRelation,
     Conversation,
     ConversationStatus,
+    DocumentSummary,
+    DocumentSummaryStatus,
     Feedback,
     File,
     FileStatus,
@@ -95,6 +99,7 @@ ALLOWED_MESSAGE_IMAGE_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp", "i
 DATA_URL_PATTERN = re.compile(r"^data:(?P<media_type>[-\w.]+/[-\w.+]+);base64,(?P<data>.+)$", re.S)
 OVERALL_CONTEXT_CHUNK_ID = "00000000-0000-0000-0000-000000000000"
 OVERALL_CONTEXT_FILE_ID = "00000000-0000-0000-0000-000000000000"
+SUMMARY_CONTEXT_SENTINEL_UUID = UUID("00000000-0000-0000-0000-000000000002")
 
 
 def list_conversations(
@@ -559,6 +564,79 @@ def stream_create_message_events(
         )
         return
 
+    if knowledge_search_decision.category == "document_summary":
+        summary_items = search_document_summaries(
+            db,
+            knowledge_base_id=conversation.knowledge_base_id,
+            query=augmented_query_text,
+        )
+        if summary_items:
+            yield ("stage", {"name": "检索文档摘要"})
+            yield (
+                "retrieval",
+                {
+                    "retrieved_count": len(summary_items),
+                    "reranked_count": len(summary_items),
+                    "final_context_count": len(summary_items),
+                },
+            )
+            yield ("stage", {"name": "生成回答"})
+            assistant_content = ""
+            for kind, text in llm_client.stream_answer(
+                query=augmented_query_text,
+                contexts=summary_items,
+                enable_thinking=payload.enable_thinking,
+            ):
+                if kind == "thinking":
+                    yield ("thinking", {"text": text})
+                    continue
+                if kind == "content":
+                    safe_token = sanitize_stream_token(text)
+                    assistant_content += safe_token
+                    if safe_token:
+                        yield ("token", {"text": safe_token})
+
+            assistant_content = sanitize_visible_text(assistant_content)
+            assistant_message.content = assistant_content
+            assistant_message.status = "completed"
+            assistant_message.model_name = llm_client.model
+            assistant_message.prompt_version = llm_client.prompt_version
+            db.flush()
+
+            save_message_trace(
+                db,
+                assistant_message=assistant_message,
+                query_text=query_text,
+                retrieval_items=summary_items,
+                final_context_items=summary_items,
+                embedding_model=embedding_client.model,
+                reranker_model=reranker_client.model,
+                chat_model=llm_client.model,
+                prompt_version=llm_client.prompt_version,
+                token_usage={},
+                raw_prompt_snapshot=None,
+            )
+            conversation.updated_at = datetime.now(UTC)
+            db.commit()
+            db.refresh(assistant_message)
+
+            yield (
+                "done",
+                {
+                    "message_id": str(assistant_message.id),
+                    "answer": assistant_content,
+                    "citations": [],
+                    "visual_result_mode": None,
+                },
+            )
+            return
+
+        knowledge_search_decision = KnowledgeSearchDecision(
+            research_base=True,
+            category="normal_rag",
+            reason="document_summary_fallback_no_summaries",
+        )
+
     yield ("stage", {"name": "检索策略分析"})
     route_decision = query_router.route(augmented_query_text)
     yield ("stage", {"name": "知识检索"})
@@ -582,6 +660,14 @@ def stream_create_message_events(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
         items=gated_context_items,
+    )
+    _chunk_graph_settings = get_settings()
+    final_context_items = expand_context_to_graph_neighbors(
+        db,
+        knowledge_base_id=conversation.knowledge_base_id,
+        items=final_context_items,
+        max_neighbors=_chunk_graph_settings.chunk_graph_max_neighbors_at_retrieval,
+        score_decay=_chunk_graph_settings.chunk_graph_score_decay,
     )
     final_context_items = apply_image_display_policy(
         final_context_items,
@@ -773,6 +859,31 @@ def prepare_message_context(
             enable_thinking=payload.enable_thinking,
         )
 
+    if knowledge_search_decision.category == "document_summary":
+        summary_items = search_document_summaries(
+            db,
+            knowledge_base_id=conversation.knowledge_base_id,
+            query=augmented_query_text,
+        )
+        if summary_items:
+            return MessageContext(
+                conversation=conversation,
+                user_message=user_message,
+                user_attachments=user_attachments,
+                query_text=augmented_query_text,
+                query_image_vector=query_image_vector,
+                knowledge_search_decision=knowledge_search_decision,
+                route_decision=None,
+                retrieval_items=summary_items,
+                final_context_items=summary_items,
+                enable_thinking=payload.enable_thinking,
+            )
+        knowledge_search_decision = KnowledgeSearchDecision(
+            research_base=True,
+            category="normal_rag",
+            reason="document_summary_fallback_no_summaries",
+        )
+
     route_decision = query_router.route(augmented_query_text)
     retrieval_response = search_knowledge_base(
         db,
@@ -793,6 +904,14 @@ def prepare_message_context(
         db,
         knowledge_base_id=conversation.knowledge_base_id,
         items=gated_context_items,
+    )
+    _chunk_graph_settings = get_settings()
+    final_context_items = expand_context_to_graph_neighbors(
+        db,
+        knowledge_base_id=conversation.knowledge_base_id,
+        items=final_context_items,
+        max_neighbors=_chunk_graph_settings.chunk_graph_max_neighbors_at_retrieval,
+        score_decay=_chunk_graph_settings.chunk_graph_score_decay,
     )
     final_context_items = apply_image_display_policy(
         final_context_items,
@@ -878,10 +997,102 @@ def is_overall_context_item(item: RetrievalResultItem) -> bool:
     return item.chunk_id == OVERALL_CONTEXT_CHUNK_ID and item.source == "metadata"
 
 
+def is_summary_context_item(item: RetrievalResultItem) -> bool:
+    return item.source == "summary" and item.chunk_id == str(SUMMARY_CONTEXT_SENTINEL_UUID)
+
+
+def build_summary_context_item(
+    *, file_id: str, file_name: str, summary_text: str
+) -> RetrievalResultItem:
+    return RetrievalResultItem(
+        chunk_id=str(SUMMARY_CONTEXT_SENTINEL_UUID),
+        file_id=file_id,
+        file_name=file_name,
+        source_locator=f"document_summary:{file_name}",
+        excerpt=summary_text,
+        score=1.0,
+        source="summary",
+        modality="text",
+    )
+
+
+def search_document_summaries(
+    db: Session,
+    *,
+    knowledge_base_id: UUID,
+    query: str,
+) -> list[RetrievalResultItem]:
+    summary_rows = db.execute(
+        select(DocumentSummary, File)
+        .join(File, File.id == DocumentSummary.file_id)
+        .where(
+            DocumentSummary.knowledge_base_id == knowledge_base_id,
+            DocumentSummary.status == DocumentSummaryStatus.COMPLETED.value,
+            DocumentSummary.summary.isnot(None),
+            File.deleted_at.is_(None),
+            File.status == FileStatus.INDEXED.value,
+            File.latest_parse_job_id == DocumentSummary.parse_job_id,
+        )
+    ).all()
+    if not summary_rows:
+        return []
+
+    normalized_query = query.lower().strip()
+    matched: list[tuple[File, DocumentSummary]] = []
+    for summary, file in summary_rows:
+        file_name_lower = file.file_name.lower()
+        file_stem = Path(file.file_name).stem.lower()
+        if (
+            file_stem in normalized_query
+            or file_name_lower in normalized_query
+            or file_stem in normalized_query
+        ):
+            matched.append((file, summary))
+
+    if not matched:
+        matched = [
+            (file, summary)
+            for summary, file in summary_rows
+            if _summary_matches_query(summary.summary or "", normalized_query)
+        ]
+
+    if not matched:
+        matched = [(file, summary) for summary, file in summary_rows]
+
+    items: list[RetrievalResultItem] = []
+    for file, summary in matched:
+        items.append(
+            build_summary_context_item(
+                file_id=str(file.id),
+                file_name=file.file_name,
+                summary_text=(summary.summary or "").strip(),
+            )
+        )
+    return items
+
+
+def _summary_matches_query(summary_text: str, normalized_query: str) -> bool:
+    from app.rag.query_router import DOC_SUMMARY_ACTION_KEYWORDS
+
+    query_terms = [
+        word
+        for word in normalized_query.split()
+        if len(word) >= 2 and word not in {kw for kw in DOC_SUMMARY_ACTION_KEYWORDS}
+    ]
+    if not query_terms:
+        return False
+    summary_lower = summary_text.lower()
+    return any(term in summary_lower for term in query_terms)
+
+
 def get_citable_context_items(
     final_context_items: Sequence[RetrievalResultItem],
 ) -> list[RetrievalResultItem]:
-    return [item for item in final_context_items if not is_overall_context_item(item)]
+    return [
+        item
+        for item in final_context_items
+        if not is_overall_context_item(item) and not is_summary_context_item(item)
+    ]
 
 
 def save_message_trace(
@@ -1179,10 +1390,13 @@ def expand_context_to_section_chunks(
     knowledge_base_id: UUID,
     items: Sequence[RetrievalResultItem],
 ) -> list[RetrievalResultItem]:
-    hit_item_by_id = parse_context_items_by_chunk_id(items)
+    summary_items = [item for item in items if is_summary_context_item(item)]
+    regular_items = [item for item in items if not is_summary_context_item(item)]
+
+    hit_item_by_id = parse_context_items_by_chunk_id(regular_items)
     hit_ids = list(hit_item_by_id)
     if not hit_ids:
-        return []
+        return list(summary_items)
 
     hit_rows = db.execute(
         select(ChunkMetadata, File)
@@ -1199,7 +1413,7 @@ def expand_context_to_section_chunks(
         chunk.id: (chunk, file) for chunk, file in hit_rows
     }
     if not hit_chunks_by_id:
-        return []
+        return list(summary_items)
 
     file_ids = {chunk.file_id for chunk, _file in hit_chunks_by_id.values()}
     file_chunk_rows = db.execute(
@@ -1221,7 +1435,7 @@ def expand_context_to_section_chunks(
         chunks_by_parse_job.setdefault((chunk.file_id, chunk.parse_job_id), []).append(chunk)
         files_by_id[file.id] = file
 
-    expanded_items: list[RetrievalResultItem] = []
+    expanded_items: list[RetrievalResultItem] = list(summary_items)
     seen_chunk_ids: set[UUID] = set()
     for chunk_id in hit_ids:
         hit_pair = hit_chunks_by_id.get(chunk_id)
@@ -1254,6 +1468,104 @@ def expand_context_to_section_chunks(
             )
             seen_chunk_ids.add(section_chunk.id)
     return expanded_items
+
+
+def expand_context_to_graph_neighbors(
+    db: Session,
+    *,
+    knowledge_base_id: UUID,
+    items: list[RetrievalResultItem],
+    max_neighbors: int,
+    score_decay: float,
+) -> list[RetrievalResultItem]:
+    existing_chunk_ids: set[UUID] = set()
+    hit_scores: dict[UUID, float] = {}
+    for item in items:
+        try:
+            chunk_id = UUID(item.chunk_id)
+        except ValueError:
+            continue
+        existing_chunk_ids.add(chunk_id)
+        if chunk_id not in hit_scores:
+            hit_scores[chunk_id] = item.score
+
+    if not hit_scores:
+        return items
+
+    rows = db.execute(
+        select(ChunkRelation).where(
+            ChunkRelation.knowledge_base_id == knowledge_base_id,
+            or_(
+                ChunkRelation.source_chunk_id.in_(list(hit_scores.keys())),
+                ChunkRelation.target_chunk_id.in_(list(hit_scores.keys())),
+            ),
+        )
+    ).scalars().all()
+
+    neighbor_candidates: dict[UUID, list[tuple[float, UUID]]] = {}
+    for relation in rows:
+        source_id = relation.source_chunk_id
+        target_id = relation.target_chunk_id
+        similarity = relation.similarity
+        if source_id in hit_scores:
+            neighbor_candidates.setdefault(target_id, []).append(
+                (similarity * hit_scores[source_id] * score_decay, source_id)
+            )
+        if target_id in hit_scores:
+            neighbor_candidates.setdefault(source_id, []).append(
+                (similarity * hit_scores[target_id] * score_decay, target_id)
+            )
+
+    selected_neighbors: dict[UUID, float] = {}
+    for neighbor_id, candidates in neighbor_candidates.items():
+        if neighbor_id in existing_chunk_ids:
+            continue
+        best_score = max(score for score, _ in candidates)
+        selected_neighbors[neighbor_id] = best_score
+
+    ranked_neighbors = sorted(
+        selected_neighbors.items(), key=lambda item: -item[1]
+    )
+    if not ranked_neighbors:
+        return items
+
+    neighbor_ids = [chunk_id for chunk_id, _ in ranked_neighbors]
+    neighbor_scores = {chunk_id: score for chunk_id, score in ranked_neighbors}
+
+    chunk_rows = db.execute(
+        select(ChunkMetadata, File)
+        .join(File, File.id == ChunkMetadata.file_id)
+        .where(
+            ChunkMetadata.id.in_(neighbor_ids),
+            ChunkMetadata.knowledge_base_id == knowledge_base_id,
+            ChunkMetadata.is_active.is_(True),
+            File.deleted_at.is_(None),
+            File.status == FileStatus.INDEXED.value,
+        )
+    ).all()
+
+    if not chunk_rows:
+        return items
+
+    result = list(items)
+    for chunk, file in chunk_rows:
+        score = neighbor_scores.get(chunk.id, 0.0)
+        result.append(
+            RetrievalResultItem(
+                chunk_id=str(chunk.id),
+                file_id=str(file.id),
+                file_name=file.file_name,
+                source_locator=chunk.source_locator,
+                excerpt=build_display_chunk_text(chunk),
+                score=score,
+                source="graph_neighbor",
+                modality=infer_chunk_modality(chunk),
+                image_url=build_chunk_image_url(chunk),
+                image_urls=build_chunk_image_urls(chunk),
+                image_alt=build_chunk_image_alt(chunk, file),
+            )
+        )
+    return result
 
 
 def parse_context_items_by_chunk_id(

@@ -36,6 +36,10 @@ Step 049 已完成文档结构化摘要、并发 Chunk 抽取与历史回填：�
 
 Step 050 已完成知识地图、跨知识库文件关联与社区摘要：当前文档摘要通过现有 Embedding 服务生成文档级向量，按余弦相似度、阈值和 Top-K 维护同库及跨库关系；全局图谱和每个知识库社区摘要使用摘要集合指纹自动更新；普通用户与管理员均可访问知识地图页面，管理员额外可刷新关系或强制重算向量。该能力独立于现有 Retrieval/Chat 主链路。
 
+Step 051 已完成文档摘要召回——总结类提问直接返回文件摘要：当用户提问"某个文件讲了什么"、"帮我总结一下XX文档"等总结类问题时，路由器识别 `document_summary` 意图，直接从 `document_summaries` 表召回对应文件的完整摘要作为 LLM 上下文，不再检索零散 chunk 段落。无可用摘要时自动降级为 `normal_rag` chunk 级检索。该能力复用 Step 049 已有摘要数据，不新增数据库表和 migration，不改变现有 RAG 主链路。
+
+Step 052 已完成 Chunk 级语义图与检索邻居扩展：每个 Chunk 的 `short_summary` 摘要被向量化并缓存，同知识库内 Chunk 按余弦相似度和 Top-K 建立语义边，形成 Chunk 级语义图。知识图谱 worker 在文档级图谱构建完成后自动增量构建 Chunk 图谱。检索命中某 Chunk 后，除现有的同 heading 段落扩展外，还会额外召回语义图中的邻居 Chunk（分数经过衰减），提升跨文档和跨段落的主题关联性。
+
 ## 步骤列表
 
 | Step | 名称 | 状态 | 对应进度文件 | 说明 |
@@ -90,6 +94,8 @@ Step 050 已完成知识地图、跨知识库文件关联与社区摘要：当�
 | 048 | 文件解析/索引后台推进器 | 已完成 | docs/progress/step-048-backend-parse-job-worker.md | 已将 parse_job 推进从状态接口轮询中移出，上传/重试后由后端后台任务和轻量 worker 推进 |
 | 049 | 文档结构化摘要、并发 Chunk 抽取与历史回填 | 已完成 | docs/progress/step-049-document-structured-summaries.md | 已实现严格结构化抽取、单文档 8 路/全局 16 路并发、分层文档摘要、独立状态、Admin API/UI 和 3,408 个历史 Chunk 回填任务 |
 | 050 | 知识地图、跨知识库文件关联与社区摘要 | 已完成 | docs/progress/step-050-knowledge-map-community-summaries.md | 已实现文档摘要向量缓存、余弦 Top-K 关系、跨知识库边、社区摘要自动更新和用户/Admin 知识地图 |
+| 051 | 文档摘要召回——总结类提问直接返回文件摘要 | 已完成 | docs/progress/step-051-document-summary-retrieval.md | 已实现总结类提问意图识别、document_summaries 摘要召回、流式/非流式接入和 normal_rag 降级 |
+| 052 | Chunk 级语义图与检索邻居扩展 | 已完成 | docs/progress/step-052-chunk-knowledge-graph.md | 已实现 Chunk short_summary 向量缓存、同知识库余弦 Top-K 语义边、知识图谱 worker 增量构建和检索图邻居扩展 |
 
 ## 已完成内容
 
@@ -312,6 +318,13 @@ Step 050 已完成知识地图、跨知识库文件关联与社区摘要：当�
 - 已新增 OpenSearch BM25 + IK Analyzer 中文关键词召回实现，包含 `chunks_bm25` mapping、`ik_max_word` 索引分词、`ik_smart` 搜索分词、BM25 client、索引 upsert、检索 search、删除失效和 PostgreSQL full-text fallback。
 - 已新增 IK 自定义词典配置，预置 `井下落鱼`、`可视化工具`、`光电复合缆`、`防爆计算机`、`地面控制工具`、`井下工具`、`VONETS`、`LED控制` 等领域词。
 - 已完成 Step 047 目标后端测试、全量后端测试、ruff、black、mypy、Python 语法检查、Compose 配置检查、OpenSearch 运行态启动、IK 插件检查、自定义词典 `_analyze` 验证、当前 74 active chunks BM25 回填、Retrieval API、非流式 Chat、Chat SSE 和 trace smoke。
+- 已新增 `document_summary` 查询意图分类：在 `query_router.py` 中增加总结意图关键词、文件引用词、知识库范围词和 `is_document_summary_query()` 检测函数，规则路由器中 `document_summary` 检测优先于 `knowledge_base_overall`。
+- 已将 `document_summary` 类别加入 `LLMKnowledgeSearchRouter` 的 prompt、system message 和分类解析正则；规则匹配命中时直接返回，不经过 LLM 分类器。
+- 已新增 `search_document_summaries()` 摘要召回函数：查询 `document_summaries` 表中 completed 摘要，按文件名匹配 → 内容匹配 → 全量兜底三级策略返回。
+- 已新增 `build_summary_context_item()` / `is_summary_context_item()` 辅助函数，使用哨兵 UUID 标识摘要上下文项。
+- 已将 `get_citable_context_items()` 扩展为排除摘要项；已将 `expand_context_to_section_chunks()` 扩展为保留摘要项不被 section 展开丢弃。
+- 已将 `document_summary` 接入非流式 `prepare_message_context()` 和流式 `stream_create_message_events()`，命中摘要时直接用摘要生成回答，未命中时降级为 `normal_rag`。
+- 已完成 Step 051 意图识别专项测试：9 种总结类提问全部正确路由为 `document_summary`，知识库总览、普通 RAG 和安全类别不受影响。
 
 ## 待完成内容
 
@@ -419,6 +432,12 @@ Step 050 已完成知识地图、跨知识库文件关联与社区摘要：当�
 - 注意：Step 028 未执行 Playwright 自动化点击测试；当前仓库尚未配置 Playwright，已通过 typecheck/build 和真实接口 smoke 进行最小验证。
 - 注意：Step 029 未执行 Playwright 自动化输入测试；当前仓库尚未配置 Playwright，已通过 typecheck/build 和源码关键字扫描进行最小验证。
 - 注意：Step 030 新增 `feedback_rating` 响应字段并已同步前端类型、中文 API contract 和 OpenAPI；老客户端忽略该字段不受影响。
+- 注意：Step 051 复用 Step 049 的 `document_summaries` 表数据，不新增数据库表或 migration；如果文档摘要尚未生成（status 非 completed），该文档不会被召回，系统会降级为 normal_rag。
+- 注意：Step 051 的摘要项使用哨兵 UUID `00000000-0000-0000-0000-000000000002` 作为 chunk_id，不参与 citation 生成；前端无需特殊处理，因为 `get_citable_context_items()` 已过滤摘要项。
+- 注意：Step 051 的文件名匹配采用 `Path(file_name).stem` 子串匹配，对于文件名较短或包含通用词的文档可能存在误匹配；后续可考虑引入摘要向量语义检索提升精度。
+- 注意：Step 051 的规则路由器中 `document_summary` 检测优先于 `knowledge_base_overall`；包含"知识库"等范围词的提问仍会走 `knowledge_base_overall`，不会被误判为文档摘要。
+- 注意：Step 052 的 Chunk 语义图仅限同知识库内 Chunk，不建跨库边；图谱构建集成在知识图谱 worker 的周期任务中，文档级图谱构建完成后自动触发。
+- 注意：Step 052 的检索邻居扩展在 `expand_context_to_section_chunks()` 之后执行，邻居分数经过 `score_decay`（默认 0.8）衰减；`document_summary` 路径不受影响。
 
 ## 外部接口实现备注
 
@@ -434,6 +453,6 @@ Step 050 已完成知识地图、跨知识库文件关联与社区摘要：当�
 
 ## 下一步开发建议
 
-建议进入 Step 049：真实前端问答体验与引用展示收口。在浏览器中使用 `测试` 知识库提问，确认 SSE 流式回答、citation detail、feedback 回显和 trace 数据，并观察 OpenSearch BM25 命中是否在真实 UI 闭环中稳定体现。
+建议进入 Step 053：真实前端问答体验与引用展示收口。在浏览器中使用 `测试` 知识库提问，分别验证普通事实类问题（走 chunk 级 RAG + 图邻居扩展）、总结类问题（走 document_summary 摘要召回）的 SSE 流式回答、citation detail、feedback 回显和 trace 数据。
 
 多模态链路的 Qwen 配置已写入并完成 text chunk embedding 验证；后续应继续补跑真实图片向量、caption/OCR/surrounding text 检索、image evidence、图片引用和前端预览验收。
