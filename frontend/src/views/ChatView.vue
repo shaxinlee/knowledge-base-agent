@@ -26,7 +26,7 @@ import {
   ElOption,
   ElSelect,
 } from 'element-plus'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -53,6 +53,8 @@ import type {
 } from '@/api/types'
 import AppLayout from '@/components/AppLayout.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
+
+defineOptions({ name: 'ChatView' })
 
 interface CitationImageItem {
   key: string
@@ -110,6 +112,8 @@ const thinkingExpandedByMessageId = ref<Record<string, boolean>>({})
 const currentStage = ref('')
 const loading = ref(false)
 const sending = ref(false)
+const streamAbortController = ref<AbortController | null>(null)
+const wasStreaming = ref(false)
 const errorMessage = ref('')
 const selectedCitation = ref<Citation | null>(null)
 const selectedCitationImageUrl = ref('')
@@ -229,11 +233,36 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  streamAbortController.value?.abort()
   revokeSelectedCitationImageUrl()
   revokeCitationImageUrls()
   revokeAttachmentImageUrls()
   stopColumnResize()
   window.removeEventListener('resize', handleViewportResize)
+})
+
+onDeactivated(() => {
+  if (sending.value) {
+    wasStreaming.value = true
+    streamAbortController.value?.abort()
+  }
+})
+
+onActivated(async () => {
+  if (wasStreaming.value) {
+    wasStreaming.value = false
+    sending.value = false
+    streamingAssistantMessageId.value = ''
+    currentStage.value = ''
+    if (activeConversationId.value) {
+      try {
+        const conversation = await getConversation(activeConversationId.value)
+        messages.value = conversation.messages
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 })
 
 function initializeResizableLayout(): void {
@@ -487,6 +516,7 @@ async function sendMessage(): Promise<void> {
   const imageAttachment = pendingImageAttachment.value
   composerText.value = ''
   let streamStarted = false
+  streamAbortController.value = new AbortController()
   try {
     if (!activeConversationId.value) {
       await startConversation()
@@ -557,11 +587,20 @@ async function sendMessage(): Promise<void> {
           void preloadCitationImages()
           void scrollToBottom()
         },
+        onError(event) {
+          errorMessage.value = event.message || '生成回答时发生错误，请重试。'
+          streamingAssistantMessageId.value = ''
+          currentStage.value = ''
+        },
       },
+      streamAbortController.value.signal,
     )
     await refreshConversationList()
     await scrollToBottom()
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return
+    }
     if (!streamStarted) {
       composerText.value = content
       pendingImageAttachment.value = imageAttachment
@@ -571,6 +610,7 @@ async function sendMessage(): Promise<void> {
     sending.value = false
     streamingAssistantMessageId.value = ''
     currentStage.value = ''
+    streamAbortController.value = null
   }
 }
 

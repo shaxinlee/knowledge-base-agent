@@ -32,6 +32,7 @@ import type {
   ResetPasswordRequest,
   ResetPasswordResponse,
   SseDoneEvent,
+  SseErrorEvent,
   SseMessageCreatedEvent,
   SseRetrievalEvent,
   SseStageEvent,
@@ -408,12 +409,14 @@ export interface ConversationMessageStreamHandlers {
   onThinking?: (event: SseThinkingEvent) => void
   onToken?: (event: SseTokenEvent) => void
   onDone?: (event: SseDoneEvent) => void
+  onError?: (event: SseErrorEvent) => void
 }
 
 export async function streamConversationMessage(
   conversationId: string,
   payload: MessageCreateRequest,
   handlers: ConversationMessageStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<void> {
   const headers = new Headers()
   headers.set('Content-Type', 'application/json')
@@ -425,6 +428,7 @@ export async function streamConversationMessage(
     method: 'POST',
     headers,
     body: JSON.stringify({ ...payload, stream: true }),
+    signal,
   })
   if (!response.ok) {
     throw await readError(response)
@@ -436,6 +440,18 @@ export async function streamConversationMessage(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let streamCompleted = false
+  const wrappedHandlers: ConversationMessageStreamHandlers = {
+    ...handlers,
+    onDone(event) {
+      streamCompleted = true
+      handlers.onDone?.(event)
+    },
+    onError(event) {
+      streamCompleted = true
+      handlers.onError?.(event)
+    },
+  }
   while (true) {
     const { value, done } = await reader.read()
     if (done) {
@@ -444,11 +460,14 @@ export async function streamConversationMessage(
     buffer += decoder.decode(value, { stream: true })
     const parts = buffer.split('\n\n')
     buffer = parts.pop() ?? ''
-    parts.forEach((part) => dispatchSseEvent(part, handlers))
+    parts.forEach((part) => dispatchSseEvent(part, wrappedHandlers))
   }
   buffer += decoder.decode()
   if (buffer.trim()) {
-    dispatchSseEvent(buffer, handlers)
+    dispatchSseEvent(buffer, wrappedHandlers)
+  }
+  if (!streamCompleted) {
+    throw new ApiClientError('回答生成中断，请重试。')
   }
 }
 
@@ -478,6 +497,8 @@ function dispatchSseEvent(rawEvent: string, handlers: ConversationMessageStreamH
     handlers.onToken?.(payload as SseTokenEvent)
   } else if (event === 'done') {
     handlers.onDone?.(payload as SseDoneEvent)
+  } else if (event === 'error') {
+    handlers.onError?.(payload as SseErrorEvent)
   }
 }
 

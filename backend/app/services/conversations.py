@@ -1,6 +1,7 @@
 import base64
 import binascii
 import hashlib
+import logging
 import re
 from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
@@ -72,6 +73,8 @@ from app.services.visual_citations import (
     infer_chunk_modality,
     strip_visible_image_references,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -373,7 +376,7 @@ def create_message(
     )
 
 
-def stream_create_message_events(
+def _generate_stream_message_events(
     db: Session,
     *,
     conversation_id: UUID,
@@ -774,6 +777,59 @@ def stream_create_message_events(
             "visual_result_mode": route_decision.visual_result_mode,
         },
     )
+
+
+def stream_create_message_events(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    payload: MessageCreateRequest,
+    current_user: User,
+    embedding_client: EmbeddingClientProtocol,
+    reranker_client: RerankerClientProtocol,
+    llm_client: LLMClientProtocol,
+    vector_index_client: VectorIndexClientProtocol,
+    bm25_index_client: BM25IndexClientProtocol,
+    storage: ObjectStorage,
+    image_description_client: ImageDescriptionClientProtocol,
+    knowledge_search_router: KnowledgeSearchRouterProtocol,
+    query_router: QueryRouterProtocol,
+) -> Generator[tuple[str, dict[str, Any]], None, None]:
+    assistant_message_id: UUID | None = None
+    try:
+        for event, data in _generate_stream_message_events(
+            db,
+            conversation_id=conversation_id,
+            payload=payload,
+            current_user=current_user,
+            embedding_client=embedding_client,
+            reranker_client=reranker_client,
+            llm_client=llm_client,
+            vector_index_client=vector_index_client,
+            bm25_index_client=bm25_index_client,
+            storage=storage,
+            image_description_client=image_description_client,
+            knowledge_search_router=knowledge_search_router,
+            query_router=query_router,
+        ):
+            if event == "message_created":
+                assistant_message_id = UUID(data["assistant_message"]["id"])
+            yield (event, data)
+    except Exception:
+        logger.exception("Stream failed for conversation %s", conversation_id)
+        if assistant_message_id is not None:
+            try:
+                db.rollback()
+                failed_msg = db.get(Message, assistant_message_id)
+                if failed_msg and failed_msg.status == "streaming":
+                    failed_msg.status = "failed"
+                    db.commit()
+            except Exception:
+                logger.exception("Failed to mark message %s as failed", assistant_message_id)
+        yield (
+            "error",
+            {"code": "stream_error", "message": "生成回答时发生错误，请重试。"},
+        )
 
 
 def prepare_message_context(
