@@ -1102,9 +1102,14 @@ def build_routed_retrieval_request(
 ) -> RetrievalSearchRequest:
     enabled_routes = [route for route in route_decision.routes if route.enabled]
     max_route_top_k = max((route.top_k for route in enabled_routes), default=30)
-    final_top_k = 24 if route_decision.visual_result_mode == "gallery" else (
-        20 if route_decision.answer_policy.must_return_visual else 16
-    )
+    if route_decision.visual_result_mode == "gallery":
+        final_top_k = 24
+    elif route_decision.answer_policy.must_return_visual:
+        final_top_k = 20
+    elif route_decision.intent in ("summarization", "comparison"):
+        final_top_k = 24
+    else:
+        final_top_k = 16
     return RetrievalSearchRequest(
         query=query,
         query_image_vector=query_image_vector,
@@ -1137,10 +1142,7 @@ def apply_evidence_gate(
     threshold = get_settings().evidence_min_reranker_score
     if threshold is None:
         return contexts
-    highest_score = max(item.score for item in contexts)
-    if highest_score < threshold:
-        return []
-    return contexts
+    return [item for item in contexts if item.score >= threshold]
 
 
 def apply_image_display_policy(
@@ -1276,15 +1278,17 @@ def collect_section_chunks(
     *,
     hit_chunk: ChunkMetadata,
 ) -> list[ChunkMetadata]:
-    if not hit_chunk.heading_path:
-        return [hit_chunk]
-
     hit_index = next(
         (index for index, chunk in enumerate(chunks) if chunk.id == hit_chunk.id),
         None,
     )
     if hit_index is None:
         return [hit_chunk]
+
+    if not hit_chunk.heading_path:
+        start_index = max(0, hit_index - 2)
+        end_index = min(len(chunks) - 1, hit_index + 2)
+        return list(chunks[start_index : end_index + 1])
 
     start_index = hit_index
     while (

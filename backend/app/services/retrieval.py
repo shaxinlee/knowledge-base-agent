@@ -183,7 +183,8 @@ def search_vector_candidates(
     embedding_client: EmbeddingClientProtocol,
     vector_index_client: VectorIndexClientProtocol,
 ) -> list[RetrievalCandidate]:
-    vectors = embedding_client.embed_texts([query])
+    enhanced_query = f"检索知识库内容：{query}"
+    vectors = embedding_client.embed_texts([enhanced_query])
     if not vectors:
         return []
     hits = vector_index_client.search_points(
@@ -315,6 +316,8 @@ def search_postgres_full_text(
     knowledge_base_id: UUID,
     limit: int,
 ) -> list[RetrievalCandidate]:
+    # TODO(retrieval): Postgres `simple` dict does not segment Chinese — prefer
+    # OpenSearch + IK (`bm25_enabled=True`) for zh content. See optimization_plan.md #2.
     ts_query = func.websearch_to_tsquery("simple", query)
     rank = func.ts_rank(ChunkMetadata.tsv, ts_query)
     rows = db.execute(

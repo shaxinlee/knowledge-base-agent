@@ -58,6 +58,8 @@ class RerankerClient:
             ) from exc
 
         scores = parse_reranker_scores(response.json(), expected_count=len(documents))
+        if get_settings().evidence_normalize_reranker_scores:
+            scores = sigmoid_normalize(scores)
         return scores
 
     def _build_vllm_score_request(
@@ -122,6 +124,8 @@ class DashScopeTextRerankerClient:
             ) from exc
 
         scores = parse_reranker_scores(response.json(), expected_count=len(documents))
+        if get_settings().evidence_normalize_reranker_scores:
+            scores = sigmoid_normalize(scores)
         return scores
 
 
@@ -202,6 +206,19 @@ def build_demo_terms(text: str) -> set[str]:
     terms = {term for term in normalized.split() if term}
     terms.update(char for char in normalized if char.strip())
     return terms
+
+
+def sigmoid_normalize(scores: list[float]) -> list[float]:
+    """Map raw reranker scores into (0, 1) via sigmoid 1/(1+e^-s).
+
+    Enable `evidence_normalize_reranker_scores` when the reranker emits
+    unbounded logits so that `evidence_min_reranker_score` reads as a
+    [0, 1] probability. Keep it disabled for rerankers whose raw output
+    is already in [0, 1] (e.g. BGE cross-encoder default).
+    """
+    import math
+
+    return [1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, s)))) for s in scores]
 
 
 def parse_reranker_scores(payload: Any, *, expected_count: int) -> list[float]:

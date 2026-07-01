@@ -36,6 +36,7 @@ class VectorIndexClientProtocol(Protocol):
         knowledge_base_id: str,
         limit: int,
         modality: str | None = None,
+        score_threshold: float | None = 0.5,
     ) -> list[VectorSearchHit]:
         pass
 
@@ -180,6 +181,7 @@ class QdrantVectorIndexClient:
         knowledge_base_id: str,
         limit: int,
         modality: str | None = None,
+        score_threshold: float | None = 0.5,
     ) -> list[VectorSearchHit]:
         filters: list[dict[str, Any]] = [
             {
@@ -190,15 +192,18 @@ class QdrantVectorIndexClient:
         ]
         if modality:
             filters.append({"key": "modality", "match": {"value": modality}})
+        search_body: dict[str, Any] = {
+            "vector": vector,
+            "limit": limit,
+            "with_payload": True,
+            "filter": {"must": filters},
+        }
+        if score_threshold is not None:
+            search_body["score_threshold"] = score_threshold
         try:
             response = httpx.post(
                 f"{self.base_url}/collections/{self.collection_name}/points/search",
-                json={
-                    "vector": vector,
-                    "limit": limit,
-                    "with_payload": True,
-                    "filter": {"must": filters},
-                },
+                json=search_body,
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()

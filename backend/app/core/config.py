@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     image_description_temperature: float = 0.2
     image_description_max_tokens: int = 800
     evidence_min_reranker_score: float | None = 0.35
+    evidence_normalize_reranker_scores: bool = False
     qdrant_url: str = "http://qdrant:6333"
     qdrant_collection: str = "chunks"
     bm25_enabled: bool = False
